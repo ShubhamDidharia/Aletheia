@@ -1,9 +1,29 @@
-import { Search, Library, Shield } from "lucide-react";
+'use client'
+
+import { useRouter } from 'next/navigation'
+import { Search, Library, Shield, LogOut } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { createClient } from "@/lib/supabase/client";
 
 export default function Home() {
+  const router = useRouter()
+  const supabase = createClient()
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut()
+    router.push('/login')
+  }
+
   return (
-    <main className="flex h-screen overflow-hidden">
+    <main className="flex h-screen overflow-hidden relative">
+      <button
+        onClick={handleSignOut}
+        className="absolute top-4 right-4 flex items-center gap-2 px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 rounded-lg transition-colors z-10"
+      >
+        <LogOut className="w-4 h-4" />
+        Sign out
+      </button>
+
       {/* Dark Sidebar */}
       <aside className="w-64 bg-zinc-950 border-r border-zinc-800 flex flex-col">
         <div className="p-6 flex items-center gap-2">
