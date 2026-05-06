@@ -32,19 +32,22 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // Check if user is authenticated
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  // Refresh session to ensure it's valid
+  await supabase.auth.getSession()
 
-  // If user is not authenticated and trying to access a protected route
-  if (!user && !isPublicRoute) {
+  // Check if there's a valid session
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+
+  // If no valid session and trying to access a protected route
+  if (!session && !isPublicRoute) {
     const loginUrl = new URL('/login', request.url)
     return NextResponse.redirect(loginUrl)
   }
 
-  // If user is authenticated and trying to access login page, redirect to home
-  if (user && pathname === '/login') {
+  // If session exists and trying to access login page, redirect to home
+  if (session && pathname === '/login') {
     const homeUrl = new URL('/', request.url)
     return NextResponse.redirect(homeUrl)
   }
