@@ -149,10 +149,11 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
     }
   }, [])
 
-  const sendStartMission = useCallback(() => {
+  const sendStartMission = useCallback((query: string) => {
     if (ws.current?.readyState === WebSocket.OPEN) {
       const message = {
         type: 'START_MISSION',
+        query: query,
       }
       ws.current.send(JSON.stringify(message))
     }

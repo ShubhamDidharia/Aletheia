@@ -1,12 +1,13 @@
 'use client'
 
-import { useId } from 'react'
+import { useId, useState } from 'react'
 import { useWebSocket } from '@/lib/websocket'
 import { WorkflowGraph } from '@/components/WorkflowGraph'
 import { Zap } from 'lucide-react'
 
 export default function DashboardPage() {
   const sessionId = useId()
+  const [query, setQuery] = useState('')
   const { messages, status, awaitingInput, sendChoice, sendStartMission } =
     useWebSocket(sessionId)
 
@@ -40,15 +41,29 @@ export default function DashboardPage() {
           <p className="text-xs text-zinc-600">Session ID: {sessionId.slice(0, 12)}...</p>
         </div>
 
-        {/* Start Button */}
-        <button
-          onClick={sendStartMission}
-          disabled={status !== 'connected'}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors mb-6"
-        >
-          <Zap className="w-4 h-4" />
-          Start Research
-        </button>
+        {/* Start Button & Input */}
+        <div className="mb-6">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Enter research query..."
+            className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-3 text-sm text-white mb-3 focus:outline-none focus:border-blue-500 transition-colors"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && status === 'connected' && query.trim()) {
+                sendStartMission(query)
+              }
+            }}
+          />
+          <button
+            onClick={() => sendStartMission(query)}
+            disabled={status !== 'connected' || !query.trim()}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+          >
+            <Zap className="w-4 h-4" />
+            Start Research
+          </button>
+        </div>
 
         {/* Messages Count */}
         <div className="p-4 bg-zinc-900 rounded-lg border border-zinc-800">

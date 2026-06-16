@@ -13,6 +13,7 @@ from schemas.messages import (
     CompleteMessage,
     UserChoiceMessage,
 )
+from graph.agent_graph import run_mission
 
 load_dotenv()
 
@@ -48,113 +49,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def fake_log_simulator(session_id: str):
-    """Simulates a research workflow with logs, sources, and human input."""
-    try:
-        # Phase 1: Planning
-        await manager.send(
-            session_id,
-            StatusUpdateMessage(
-                type="STATUS_UPDATE",
-                phase="planning",
-                description="Breaking query into tasks...",
-            ).model_dump(),
-        )
-
-        await asyncio.sleep(1.5)
-
-        # Phase 2: Search
-        await manager.send(
-            session_id,
-            LogMessage(
-                type="LOG",
-                message="Searching for Apple ESG 2026...",
-                icon="search",
-            ).model_dump(),
-        )
-
-        await asyncio.sleep(1)
-
-        # Phase 3: Source found
-        await manager.send(
-            session_id,
-            SourceFoundMessage(
-                type="SOURCE_FOUND",
-                title="Apple Sustainability Report 2025",
-                url="https://apple.com/esg",
-                source_type="pdf",
-            ).model_dump(),
-        )
-
-        await asyncio.sleep(1)
-
-        # Phase 4: Analyzing
-        await manager.send(
-            session_id,
-            LogMessage(
-                type="LOG",
-                message="Analyzing carbon credit data...",
-                icon="compare",
-            ).model_dump(),
-        )
-
-        await asyncio.sleep(1)
-
-        # Phase 5: Awaiting input
-        await manager.send(
-            session_id,
-            AwaitingInputMessage(
-                type="AWAITING_INPUT",
-                question="I found 12 sources older than 3 years. Include for historical context?",
-                options=["Yes, include them", "No, recent only"],
-            ).model_dump(),
-        )
-
-        # Wait for user choice (will be handled in the WebSocket handler)
-        # This is a placeholder - the actual wait happens in the connection handler
-
-    except Exception as e:
-        print(f"Error in fake_log_simulator: {e}")
-
-
-async def handle_user_choice(session_id: str, choice: str):
-    """Handles user choice and continues the workflow."""
-    try:
-        await asyncio.sleep(1)
-
-        # Send confirmation
-        await manager.send(
-            session_id,
-            LogMessage(
-                type="LOG",
-                message=f"Understood. Proceeding with: {choice}",
-                icon="read",
-            ).model_dump(),
-        )
-
-        await asyncio.sleep(2)
-
-        # Send completion
-        await manager.send(
-            session_id,
-            CompleteMessage(
-                type="COMPLETE",
-                ui="table",
-                data={
-                    "company": "Apple Inc.",
-                    "year": 2026,
-                    "carbon_neutral": True,
-                    "renewable_energy_percent": 87,
-                    "waste_recycled_tons": 78500,
-                    "water_usage_reduction": "42%",
-                },
-                narrative="Apple has achieved carbon neutrality in their operations with 87% renewable energy usage and significant waste reduction initiatives.",
-            ).model_dump(),
-        )
-
-    except Exception as e:
-        print(f"Error in handle_user_choice: {e}")
-
+# Old mocked functions removed for production.
 
 @app.get("/")
 async def root():
@@ -169,7 +64,6 @@ async def health():
 @app.websocket("/ws/research/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await manager.connect(session_id, websocket)
-    simulator_task = None
 
     try:
         while True:
@@ -177,19 +71,45 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             message = json.loads(data)
 
             if message.get("type") == "START_MISSION":
-                # Start the fake log simulator
-                if simulator_task is None or simulator_task.done():
-                    simulator_task = asyncio.create_task(fake_log_simulator(session_id))
+                query = message.get("query", "Default research query")
+                
+                async def emit(event: dict):
+                    await websocket.send_json(event)
+                
+                # Send immediate status
+                await emit(
+                    StatusUpdateMessage(
+                        type="STATUS_UPDATE",
+                        phase="planning",
+                        description="Mission started, initializing agents...",
+                    ).model_dump()
+                )
+                
+                # Run actual graph
+                try:
+                    final_state = await run_mission(query, emit)
+                    
+                    # Convert Pydantic models to dicts for COMPLETE message
+                    sources_data = [s.model_dump() for s in final_state.get("sources", [])]
+                    
+                    await emit(
+                        CompleteMessage(
+                            type="COMPLETE",
+                            ui="table",
+                            data={"sources": sources_data},
+                            narrative=f"Research complete for: {query}"
+                        ).model_dump()
+                    )
+                except Exception as e:
+                    print(f"Mission error: {e}")
+                    await emit({"type": "ERROR", "message": str(e)})
 
             elif message.get("type") == "USER_CHOICE":
-                # Handle user choice
-                choice = message.get("choice", "")
-                await handle_user_choice(session_id, choice)
+                # Fallback handler, as we removed the mock choice handler
+                pass
 
     except WebSocketDisconnect:
         manager.disconnect(session_id)
-        if simulator_task and not simulator_task.done():
-            simulator_task.cancel()
     except Exception as e:
         print(f"WebSocket error: {e}")
         manager.disconnect(session_id)
