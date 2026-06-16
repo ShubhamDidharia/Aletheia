@@ -1,6 +1,6 @@
 'use client'
 
-import { useId, useState } from 'react'
+import { useId, useState, useEffect } from 'react'
 import { useWebSocket } from '@/lib/websocket'
 import { WorkflowGraph } from '@/components/WorkflowGraph'
 import { Zap } from 'lucide-react'
@@ -8,8 +8,17 @@ import { Zap } from 'lucide-react'
 export default function DashboardPage() {
   const sessionId = useId()
   const [query, setQuery] = useState('')
+  const [isMounted, setIsMounted] = useState(false)
   const { messages, status, awaitingInput, sendChoice, sendStartMission } =
     useWebSocket(sessionId)
+
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
+
+  if (!isMounted) {
+    return null // Prevent hydration mismatch
+  }
 
   const statusColors = {
     connecting: 'bg-yellow-500',

@@ -90,7 +90,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     final_state = await run_mission(query, emit)
                     
                     # Convert Pydantic models to dicts for COMPLETE message
-                    sources_data = [s.model_dump() for s in final_state.get("sources", [])]
+                    sources_data = [s.model_dump(mode="json") for s in final_state.get("sources", [])]
                     
                     await emit(
                         CompleteMessage(
