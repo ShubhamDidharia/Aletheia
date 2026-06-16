@@ -14,6 +14,7 @@ from schemas.messages import (
     UserChoiceMessage,
 )
 from graph.agent_graph import run_mission
+from services import redis_service
 
 load_dotenv()
 
@@ -48,8 +49,8 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-
-# Old mocked functions removed for production.
+# Track background mission tasks
+running_missions: dict[str, asyncio.Task] = {}
 
 @app.get("/")
 async def root():
@@ -64,8 +65,19 @@ async def health():
 @app.websocket("/ws/research/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await manager.connect(session_id, websocket)
+    subscriber_task = None
 
     try:
+        # Start subscriber loop to forward Redis pub/sub messages to the WebSocket
+        async def subscribe_loop():
+            try:
+                async for event in redis_service.subscribe(session_id):
+                    await manager.send(session_id, event)
+            except asyncio.CancelledError:
+                pass
+                
+        subscriber_task = asyncio.create_task(subscribe_loop())
+
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
@@ -73,46 +85,64 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             if message.get("type") == "START_MISSION":
                 query = message.get("query", "Default research query")
                 
-                async def emit(event: dict):
-                    await websocket.send_json(event)
+                # Check for existing checkpoint
+                checkpoint = await redis_service.load_checkpoint(session_id)
+                if checkpoint and checkpoint.get("status") != "completed":
+                    await redis_service.publish_event(session_id, {
+                        "type": "STATUS_UPDATE",
+                        "phase": "planning",
+                        "description": "Reattaching to in-progress research..."
+                    })
+                else:
+                    await redis_service.publish_event(session_id, {
+                        "type": "STATUS_UPDATE",
+                        "phase": "planning",
+                        "description": "Mission started, initializing agents..."
+                    })
+                    checkpoint = None
                 
-                # Send immediate status
-                await emit(
-                    StatusUpdateMessage(
-                        type="STATUS_UPDATE",
-                        phase="planning",
-                        description="Mission started, initializing agents...",
-                    ).model_dump()
-                )
+                # Run actual graph in background
+                async def run_mission_task():
+                    try:
+                        final_state = await run_mission(session_id, query, checkpoint)
+                        
+                        # Convert Pydantic models to dicts for COMPLETE message
+                        sources_data = [
+                            s.model_dump(mode="json") if hasattr(s, "model_dump") else s 
+                            for s in final_state.get("sources", [])
+                        ]
+                        
+                        await redis_service.publish_event(session_id, {
+                            "type": "COMPLETE",
+                            "ui": "table",
+                            "data": {"sources": sources_data},
+                            "narrative": f"Research complete for: {query}"
+                        })
+                        await redis_service.delete_checkpoint(session_id)
+                    except Exception as e:
+                        print(f"Mission error: {e}")
+                        await redis_service.publish_event(session_id, {"type": "ERROR", "message": str(e)})
+                    finally:
+                        if session_id in running_missions:
+                            del running_missions[session_id]
                 
-                # Run actual graph
-                try:
-                    final_state = await run_mission(query, emit)
-                    
-                    # Convert Pydantic models to dicts for COMPLETE message
-                    sources_data = [s.model_dump(mode="json") for s in final_state.get("sources", [])]
-                    
-                    await emit(
-                        CompleteMessage(
-                            type="COMPLETE",
-                            ui="table",
-                            data={"sources": sources_data},
-                            narrative=f"Research complete for: {query}"
-                        ).model_dump()
-                    )
-                except Exception as e:
-                    print(f"Mission error: {e}")
-                    await emit({"type": "ERROR", "message": str(e)})
+                if session_id not in running_missions or running_missions[session_id].done():
+                    running_missions[session_id] = asyncio.create_task(run_mission_task())
 
             elif message.get("type") == "USER_CHOICE":
-                # Fallback handler, as we removed the mock choice handler
-                pass
+                # Minimal hook for Commit 6
+                # e.g., writing the choice to Redis so the graph can pick it up
+                client = redis_service.get_redis()
+                await client.rpush(f"resume:{session_id}", json.dumps(message))
 
     except WebSocketDisconnect:
         manager.disconnect(session_id)
     except Exception as e:
         print(f"WebSocket error: {e}")
         manager.disconnect(session_id)
+    finally:
+        if subscriber_task:
+            subscriber_task.cancel()
 
 
 if __name__ == "__main__":

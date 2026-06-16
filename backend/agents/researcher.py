@@ -1,9 +1,10 @@
-from typing import Callable, Awaitable, List, Dict, Any
+from typing import List, Dict, Any
 from schemas.responses import SearchResult
 from services.tavily import search
+from services.redis_service import publish_event
 
-async def research(task: str, emit: Callable[[Dict[str, Any]], Awaitable[None]]) -> List[SearchResult]:
-    await emit({
+async def research(task: str, session_id: str) -> List[SearchResult]:
+    await publish_event(session_id, {
         "type": "LOG",
         "message": f"Searching for '{task}'...",
         "icon": "search"
@@ -23,7 +24,7 @@ async def research(task: str, emit: Callable[[Dict[str, Any]], Awaitable[None]])
             valid_results.append(result)
             
             # Emit the valid source
-            await emit({
+            await publish_event(session_id, {
                 "type": "SOURCE_FOUND",
                 "title": result.title,
                 "url": str(result.url),
