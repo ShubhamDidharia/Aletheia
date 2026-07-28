@@ -6,10 +6,22 @@ import { Search, Library, Shield, LogOut } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { createClient } from "@/lib/supabase/client";
 
+const SUGGESTIONS = [
+  "Compare Tesla vs BYD's 2026 solid-state battery roadmaps",
+  'Compare Apple and Microsoft 2026 ESG carbon targets',
+  'Lithium supply chain risks for European EV makers in 2026',
+]
+
 export default function Home() {
   const router = useRouter()
   const supabase = createClient()
   const [isLoading, setIsLoading] = useState(true)
+  const [query, setQuery] = useState('')
+
+  const launch = (goal: string) => {
+    const trimmed = goal.trim()
+    if (trimmed) router.push(`/dashboard?q=${encodeURIComponent(trimmed)}`)
+  }
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -81,20 +93,27 @@ export default function Home() {
             <div className="absolute inset-0 bg-blue-500/10 blur-xl opacity-0 group-focus-within:opacity-100 transition-opacity" />
             <div className="relative flex items-center">
               <Search className="absolute left-4 w-5 h-5 text-zinc-500" />
-              <Input 
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') launch(query)
+                }}
                 className="w-full h-14 pl-12 pr-4 bg-zinc-900 border-zinc-800 focus:border-blue-500/50 focus:ring-blue-500/20 text-lg rounded-2xl transition-all"
-                placeholder="Enter a research topic or URL..."
+                placeholder="Enter a research goal, then press Enter..."
               />
             </div>
           </div>
-          
-          <div className="mt-6 flex flex-wrap justify-center gap-2">
-            {["Market Analysis", "Cyber Threat Intel", "Competitor Research"].map((tag) => (
-              <button 
-                key={tag}
-                className="px-3 py-1.5 rounded-full bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-400 transition-colors border border-zinc-700/50"
+
+          <div className="mt-6 flex flex-col items-center gap-2 w-full">
+            <p className="text-xs text-zinc-600">Try one of these</p>
+            {SUGGESTIONS.map((suggestion) => (
+              <button
+                key={suggestion}
+                onClick={() => launch(suggestion)}
+                className="px-4 py-2 rounded-full bg-zinc-800 hover:bg-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 transition-colors border border-zinc-700/50"
               >
-                {tag}
+                {suggestion}
               </button>
             ))}
           </div>

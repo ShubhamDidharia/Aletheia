@@ -1,191 +1,224 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import { ExternalLink } from 'lucide-react'
+import {
+  Search,
+  FileText,
+  Scale,
+  ListChecks,
+  Check,
+  AlertTriangle,
+  CircleDot,
+  Loader2,
+} from 'lucide-react'
 import type {
   ServerMessage,
-  LogMessage,
-  SourceFoundMessage,
+  LogIcon,
   AwaitingInputMessage,
-  StatusUpdateMessage,
-  CompleteMessage,
+  MissionPhase,
 } from '@/lib/websocket'
 
 interface WorkflowGraphProps {
   messages: ServerMessage[]
-  onSendChoice?: (choice: string) => void
+  phase: MissionPhase
+  awaitingInput: AwaitingInputMessage | null
+  onSendChoice: (choice: string) => void
 }
 
-export function WorkflowGraph({ messages, onSendChoice }: WorkflowGraphProps) {
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+const LOG_ICONS: Record<LogIcon, typeof Search> = {
+  search: Search,
+  read: FileText,
+  compare: Scale,
+  list: ListChecks,
+  check: Check,
+}
+
+function formatTime(timestamp?: string) {
+  if (!timestamp) return ''
+  const date = new Date(timestamp)
+  return Number.isNaN(date.getTime())
+    ? ''
+    : date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+export function WorkflowGraph({
+  messages,
+  phase,
+  awaitingInput,
+  onSendChoice,
+}: WorkflowGraphProps) {
+  const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  const getLogIcon = (icon: string) => {
-    switch (icon) {
-      case 'search':
-        return '🔍'
-      case 'read':
-        return '📄'
-      case 'compare':
-        return '⚖️'
-      default:
-        return '•'
-    }
-  }
-
-  const formatTime = (timestamp?: string) => {
-    if (!timestamp) return ''
-    try {
-      const date = new Date(timestamp)
-      return date.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      })
-    } catch {
-      return ''
-    }
-  }
+    endRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, awaitingInput])
 
   return (
-    <div className="flex-1 flex flex-col bg-zinc-900/50 border-l border-zinc-800">
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+    <section className="flex-1 flex flex-col min-w-0 bg-zinc-900/40">
+      <header className="px-6 py-4 border-b border-zinc-800 flex items-center gap-2">
+        <CircleDot className="w-4 h-4 text-blue-500" />
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
+          Thought Stream
+        </h2>
+        {phase === 'running' && (
+          <Loader2 className="w-4 h-4 text-blue-400 animate-spin ml-auto" aria-label="Working" />
+        )}
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2">
         {messages.length === 0 && (
-          <div className="flex items-center justify-center h-full text-zinc-500">
-            <div className="text-center">
-              <p className="text-sm">No activity yet</p>
-              <p className="text-xs text-zinc-600 mt-1">Start a research mission to begin</p>
+          <div className="flex items-center justify-center h-full text-center">
+            <div>
+              <p className="text-sm text-zinc-500">No activity yet</p>
+              <p className="text-xs text-zinc-600 mt-1">
+                Start a research mission to watch the agent work
+              </p>
             </div>
           </div>
         )}
 
         {messages.map((message, index) => {
+          const key = `${index}-${message.type}`
+
           switch (message.type) {
-            case 'STATUS_UPDATE': {
-              const msg = message as StatusUpdateMessage
+            case 'STATUS_UPDATE':
               return (
                 <div
-                  key={index}
-                  className="border-l-2 border-blue-500/50 pl-4 py-2 bg-blue-500/5 rounded-r-lg"
+                  key={key}
+                  className="border-l-2 border-blue-500/60 pl-4 py-2 bg-blue-500/5 rounded-r-lg"
                 >
-                  <div className="text-xs uppercase tracking-widest text-blue-400 font-semibold">
-                    {msg.phase}
+                  <div className="text-[11px] uppercase tracking-widest text-blue-400 font-semibold">
+                    {message.phase}
                   </div>
-                  <div className="text-sm text-zinc-300 mt-1">{msg.description}</div>
-                  {msg.timestamp && (
-                    <div className="text-xs text-zinc-600 mt-1">{formatTime(msg.timestamp)}</div>
+                  <div className="text-sm text-zinc-200 mt-0.5">{message.description}</div>
+                  <div className="text-[11px] text-zinc-600 mt-1">
+                    {formatTime(message.timestamp)}
+                  </div>
+                </div>
+              )
+
+            case 'LOG': {
+              const Icon = LOG_ICONS[message.icon] ?? CircleDot
+              return (
+                <div key={key} className="flex gap-3 py-1.5 px-1">
+                  <Icon className="w-4 h-4 mt-0.5 shrink-0 text-zinc-500" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-zinc-300 break-words">{message.message}</p>
+                    <p className="text-[11px] text-zinc-600 mt-0.5">
+                      {formatTime(message.timestamp)}
+                    </p>
+                  </div>
+                </div>
+              )
+            }
+
+            case 'SOURCE_FOUND':
+              // Rendered in the Source Library panel, not the stream.
+              return null
+
+            case 'AWAITING_INPUT':
+              // The live prompt is rendered below, pinned to the bottom.
+              return (
+                <div
+                  key={key}
+                  className="border-l-2 border-purple-500/60 pl-4 py-2 bg-purple-500/5 rounded-r-lg"
+                >
+                  <div className="text-[11px] uppercase tracking-widest text-purple-400 font-semibold">
+                    Decision gate
+                  </div>
+                  <div className="text-sm text-zinc-200 mt-0.5">{message.question}</div>
+                </div>
+              )
+
+            case 'ERROR':
+              return (
+                <div
+                  key={key}
+                  className="flex gap-3 p-3 bg-red-500/10 border border-red-500/30 rounded-lg"
+                >
+                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-red-400" />
+                  <div className="min-w-0">
+                    <p className="text-sm text-red-200 break-words">{message.message}</p>
+                    <p className="text-[11px] text-red-400/60 mt-0.5">
+                      {message.recoverable ? 'Recoverable' : 'Mission stopped'} ·{' '}
+                      {formatTime(message.timestamp)}
+                    </p>
+                  </div>
+                </div>
+              )
+
+            case 'COMPLETE':
+              return (
+                <div
+                  key={key}
+                  className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-lg"
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <Check className="w-4 h-4 text-emerald-400" />
+                    <p className="text-sm font-semibold text-emerald-300">Research complete</p>
+                  </div>
+                  <p className="text-sm text-emerald-100/80">{message.narrative}</p>
+
+                  {!!message.data?.tasks?.length && (
+                    <div className="mt-3">
+                      <p className="text-[11px] uppercase tracking-wider text-emerald-400/70 mb-1">
+                        Search tasks executed
+                      </p>
+                      <ol className="list-decimal list-inside space-y-0.5">
+                        {message.data.tasks.map((task, i) => (
+                          <li key={i} className="text-xs text-zinc-300 break-words">
+                            {task}
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+
+                  {!!message.data?.decisions?.length && (
+                    <div className="mt-3">
+                      <p className="text-[11px] uppercase tracking-wider text-emerald-400/70 mb-1">
+                        Your decisions
+                      </p>
+                      <ul className="space-y-0.5">
+                        {message.data.decisions.map((decision, i) => (
+                          <li key={i} className="text-xs text-zinc-300">
+                            <span className="text-zinc-500">{decision.gate_id}:</span>{' '}
+                            {decision.label}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
                 </div>
               )
-            }
-
-            case 'LOG': {
-              const msg = message as LogMessage
-              return (
-                <div key={index} className="flex gap-3 py-2">
-                  <span className="text-lg flex-shrink-0">{getLogIcon(msg.icon)}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-zinc-300">{msg.message}</p>
-                    {msg.timestamp && (
-                      <p className="text-xs text-zinc-600 mt-1">{formatTime(msg.timestamp)}</p>
-                    )}
-                  </div>
-                </div>
-              )
-            }
-
-            case 'SOURCE_FOUND': {
-              const msg = message as SourceFoundMessage
-              return (
-                <div key={index} className="py-2">
-                  <div className="inline-flex gap-2 items-start p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg max-w-md">
-                    <div className="text-lg flex-shrink-0">📎</div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-amber-300">{msg.title}</p>
-                      <a
-                        href={msg.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-amber-200 hover:text-amber-100 flex items-center gap-1 mt-1 truncate"
-                      >
-                        <span className="truncate">{msg.url}</span>
-                        <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                      </a>
-                      <p className="text-xs text-amber-400/70 mt-1">
-                        Type: {msg.source_type.toUpperCase()}
-                      </p>
-                      {msg.timestamp && (
-                        <p className="text-xs text-zinc-600 mt-1">{formatTime(msg.timestamp)}</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )
-            }
-
-            case 'AWAITING_INPUT': {
-              const msg = message as AwaitingInputMessage
-              return (
-                <div key={index} className="py-2">
-                  <div className="p-4 bg-purple-500/10 border border-purple-500/30 rounded-lg">
-                    <p className="text-sm font-medium text-purple-300 mb-3">{msg.question}</p>
-                    <div className="flex flex-col gap-2">
-                      {msg.options.map((option, optIndex) => (
-                        <button
-                          key={optIndex}
-                          onClick={() => onSendChoice?.(option)}
-                          className="px-3 py-2 text-sm bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors text-left"
-                        >
-                          {option}
-                        </button>
-                      ))}
-                    </div>
-                    {msg.timestamp && (
-                      <p className="text-xs text-zinc-600 mt-2">{formatTime(msg.timestamp)}</p>
-                    )}
-                  </div>
-                </div>
-              )
-            }
-
-            case 'COMPLETE': {
-              const msg = message as CompleteMessage
-              return (
-                <div key={index} className="py-2">
-                  <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-lg">
-                    <div className="flex items-center gap-2 mb-3">
-                      <span className="text-lg">✅</span>
-                      <p className="text-sm font-semibold text-green-400">Research Complete</p>
-                    </div>
-                    <p className="text-sm text-green-300/80 mb-3">{msg.narrative}</p>
-                    {Object.keys(msg.data).length > 0 && (
-                      <div className="bg-zinc-900 rounded p-2 text-xs text-zinc-300 space-y-1 font-mono">
-                        {Object.entries(msg.data).map(([key, value]) => (
-                          <div key={key}>
-                            <span className="text-zinc-500">{key}:</span>{' '}
-                            <span className="text-green-400">{String(value)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {msg.timestamp && (
-                      <p className="text-xs text-zinc-600 mt-2">{formatTime(msg.timestamp)}</p>
-                    )}
-                  </div>
-                </div>
-              )
-            }
 
             default:
               return null
           }
         })}
 
-        <div ref={messagesEndRef} />
+        <div ref={endRef} />
       </div>
-    </div>
+
+      {awaitingInput && (
+        <div className="border-t border-purple-500/40 bg-purple-500/10 px-6 py-4">
+          <p className="text-[11px] uppercase tracking-widest text-purple-300 font-semibold mb-2">
+            The agent needs your decision
+          </p>
+          <p className="text-sm text-zinc-100 mb-4">{awaitingInput.question}</p>
+          <div className="flex flex-wrap gap-3">
+            {awaitingInput.options.map((option) => (
+              <button
+                key={option}
+                onClick={() => onSendChoice(option)}
+                className="flex-1 min-w-[200px] px-4 py-3 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
