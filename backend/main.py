@@ -162,6 +162,13 @@ async def _drive(session_id: str, coro, query: str) -> None:
     try:
         final_state = await coro
         pending = _extract_interrupt(final_state)
+
+        # Deregister BEFORE announcing. Publishing costs several Redis round
+        # trips, and the client can answer an AWAITING_INPUT the instant it
+        # arrives — if this session still looked "running" at that moment the
+        # reply would be rejected and the agent would stay parked forever.
+        running_missions.pop(session_id, None)
+
         if pending:
             await _publish_awaiting(session_id, pending)
             return
@@ -325,18 +332,27 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     })
                     continue
 
-                if _is_running(session_id):
+                # Whether a decision is pending is decided by the graph, not by
+                # our task bookkeeping — check it first so the error messages
+                # can't contradict the agent's actual state.
+                if not await get_pending_interrupt(session_id):
                     await manager.send(session_id, {
                         "type": "ERROR",
-                        "message": "Still working — no decision is pending.",
+                        "message": (
+                            "Still working — no decision is pending yet."
+                            if _is_running(session_id)
+                            else "No decision is pending for this session."
+                        ),
                         "recoverable": True,
                     })
                     continue
 
-                if not await get_pending_interrupt(session_id):
+                if _is_running(session_id):
+                    # A resume for this gate is already in flight; a second one
+                    # would run the graph twice.
                     await manager.send(session_id, {
                         "type": "ERROR",
-                        "message": "No decision is pending for this session.",
+                        "message": "That decision is already being applied.",
                         "recoverable": True,
                     })
                     continue

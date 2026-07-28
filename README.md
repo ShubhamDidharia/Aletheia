@@ -66,6 +66,18 @@ the protocol behaves — including a simulated page refresh mid-pause:
 cd backend && python test_ws.py "Compare Apple and Microsoft 2026 ESG carbon targets"
 ```
 
+Regression test for the decision-gate race (answering the instant the question
+arrives). Uses a stub graph, so it costs no Gemini or Tavily quota:
+
+```bash
+cd backend && python test_race.py
+```
+
+> **Gemini free tier is ~20 requests/day per model.** A mission costs 2 calls
+> (planner + conflict analyst), or 3 if you narrow the scope. If you see
+> `Gemini quota exhausted`, wait for the midnight-Pacific reset or enable
+> billing on the Google Cloud project.
+
 ---
 
 ## Architecture

@@ -33,6 +33,11 @@ def get_client() -> genai.Client:
     return _client
 
 
+def _is_quota_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "RESOURCE_EXHAUSTED" in text or "429" in text
+
+
 async def generate_structured(prompt: str, schema: Type[T], retries: int = 2) -> T:
     """Call Gemini and parse the response into `schema`. Retries transient errors."""
     client = get_client()
@@ -52,6 +57,17 @@ async def generate_structured(prompt: str, schema: Type[T], retries: int = 2) ->
                 raise LLMError("Gemini returned an empty response.")
             return schema.model_validate_json(response.text)
         except Exception as e:
+            # A blown quota won't clear in a few seconds — retrying just delays
+            # the error and can burn more of the allowance.
+            if _is_quota_error(e):
+                raise LLMError(
+                    f"Gemini quota exhausted for model '{MODEL}'. The free tier allows "
+                    f"a limited number of requests per day, which resets at midnight "
+                    f"Pacific. Wait for the reset, enable billing on your Google Cloud "
+                    f"project, or set GEMINI_MODEL in backend/.env to a model with "
+                    f"remaining quota."
+                ) from e
+
             last_error = e
             log.warning("Gemini call failed (attempt %d/%d): %s", attempt + 1, retries + 1, e)
             if attempt < retries:
