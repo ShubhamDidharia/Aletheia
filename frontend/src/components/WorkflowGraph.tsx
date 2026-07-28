@@ -2,22 +2,11 @@
 
 import { useEffect, useRef } from 'react'
 import {
-  Search,
-  FileText,
-  Scale,
-  ListChecks,
-  Check,
-  AlertTriangle,
-  CircleDot,
-  Loader2,
+  Search, FileText, Scale, ListChecks, Check, AlertTriangle, Circle, GitBranch,
 } from 'lucide-react'
-import type {
-  ServerMessage,
-  LogIcon,
-  AwaitingInputMessage,
-  MissionPhase,
-} from '@/lib/websocket'
+import type { ServerMessage, LogIcon, AwaitingInputMessage, MissionPhase } from '@/lib/websocket'
 import { ResultPanel } from '@/components/ResultPanel'
+import { DecisionGate } from '@/components/DecisionGate'
 
 interface WorkflowGraphProps {
   messages: ServerMessage[]
@@ -39,145 +28,130 @@ function formatTime(timestamp?: string) {
   const date = new Date(timestamp)
   return Number.isNaN(date.getTime())
     ? ''
-    : date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 }
 
+/**
+ * The live thought stream: a vertical rail with the agent's actions on it.
+ * Phase changes are the anchors; individual logs hang off them.
+ */
 export function WorkflowGraph({
-  messages,
-  phase,
-  awaitingInput,
-  onSendChoice,
+  messages, phase, awaitingInput, onSendChoice,
 }: WorkflowGraphProps) {
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, awaitingInput])
+    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [messages.length, awaitingInput])
+
+  const visible = messages.filter(
+    (m) => m.type !== 'SOURCE_FOUND' && m.type !== 'SOURCES_SYNC'
+  )
 
   return (
-    <section className="flex-1 flex flex-col min-w-0 bg-zinc-900/40">
-      <header className="px-6 py-4 border-b border-zinc-800 flex items-center gap-2">
-        <CircleDot className="w-4 h-4 text-blue-500" />
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
-          Thought Stream
-        </h2>
-        {phase === 'running' && (
-          <Loader2 className="w-4 h-4 text-blue-400 animate-spin ml-auto" aria-label="Working" />
-        )}
-      </header>
-
-      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2">
-        {messages.length === 0 && (
-          <div className="flex items-center justify-center h-full text-center">
-            <div>
-              <p className="text-sm text-zinc-500">No activity yet</p>
-              <p className="text-xs text-zinc-600 mt-1">
-                Start a research mission to watch the agent work
-              </p>
-            </div>
-          </div>
+    <div className="flex-1 overflow-y-auto scroll-slim">
+      <div className="mx-auto max-w-3xl px-4 sm:px-6 py-5">
+        {visible.length === 0 && phase === 'running' && (
+          <p className="text-sm text-ink-3 py-8 text-center">Starting the agent…</p>
         )}
 
-        {messages.map((message, index) => {
-          const key = `${index}-${message.type}`
+        <ol className="relative">
+          {/* the rail */}
+          <span aria-hidden className="absolute left-[11px] top-2 bottom-2 w-px bg-hairline" />
 
-          switch (message.type) {
-            case 'STATUS_UPDATE':
-              return (
-                <div
-                  key={key}
-                  className="border-l-2 border-blue-500/60 pl-4 py-2 bg-blue-500/5 rounded-r-lg"
-                >
-                  <div className="text-[11px] uppercase tracking-widest text-blue-400 font-semibold">
-                    {message.phase}
-                  </div>
-                  <div className="text-sm text-zinc-200 mt-0.5">{message.description}</div>
-                  <div className="text-[11px] text-zinc-600 mt-1">
-                    {formatTime(message.timestamp)}
-                  </div>
-                </div>
-              )
+          {visible.map((message, index) => {
+            const key = `${index}-${message.type}`
 
-            case 'LOG': {
-              const Icon = LOG_ICONS[message.icon] ?? CircleDot
-              return (
-                <div key={key} className="flex gap-3 py-1.5 px-1">
-                  <Icon className="w-4 h-4 mt-0.5 shrink-0 text-zinc-500" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-zinc-300 break-words">{message.message}</p>
-                    <p className="text-[11px] text-zinc-600 mt-0.5">
-                      {formatTime(message.timestamp)}
+            switch (message.type) {
+              case 'STATUS_UPDATE':
+                return (
+                  <li key={key} className="relative pl-9 py-2.5">
+                    <span className="absolute left-0 top-3 w-[23px] grid place-items-center">
+                      <span className="w-2.5 h-2.5 rounded-full bg-brand ring-4 ring-plane" />
+                    </span>
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-widest text-brand">
+                        {message.phase}
+                      </span>
+                      <span className="text-[10px] text-ink-3 tabular-nums">
+                        {formatTime(message.timestamp)}
+                      </span>
+                    </div>
+                    <p className="text-sm text-ink mt-0.5 break-words">{message.description}</p>
+                  </li>
+                )
+
+              case 'LOG': {
+                const Icon = LOG_ICONS[message.icon] ?? Circle
+                return (
+                  <li key={key} className="relative pl-9 py-1">
+                    <span className="absolute left-0 top-1.5 w-[23px] grid place-items-center">
+                      <span className="w-[23px] h-[23px] rounded-full bg-plane grid place-items-center">
+                        <Icon className="w-3.5 h-3.5 text-ink-3" />
+                      </span>
+                    </span>
+                    <p className="text-[13px] text-ink-2 leading-relaxed break-words">
+                      {message.message}
                     </p>
-                  </div>
-                </div>
-              )
+                  </li>
+                )
+              }
+
+              case 'AWAITING_INPUT':
+                return (
+                  <li key={key} className="relative pl-9 py-2">
+                    <span className="absolute left-0 top-2.5 w-[23px] grid place-items-center">
+                      <span className="w-[23px] h-[23px] rounded-full bg-plane grid place-items-center">
+                        <GitBranch className="w-3.5 h-3.5 text-decision" />
+                      </span>
+                    </span>
+                    <p className="text-[13px] text-decision/90 leading-relaxed break-words">
+                      {message.question}
+                    </p>
+                  </li>
+                )
+
+              case 'ERROR':
+                return (
+                  <li key={key} className="relative pl-9 py-2">
+                    <span className="absolute left-0 top-2.5 w-[23px] grid place-items-center">
+                      <span className="w-[23px] h-[23px] rounded-full bg-plane grid place-items-center">
+                        <AlertTriangle className="w-3.5 h-3.5 text-critical" />
+                      </span>
+                    </span>
+                    <div className="rounded-lg border border-critical/30 bg-critical/10 px-3 py-2">
+                      <p className="text-[13px] text-ink break-words">{message.message}</p>
+                      <p className="text-[10px] text-critical/80 mt-1">
+                        {message.recoverable ? 'Recoverable' : 'Mission stopped'}
+                      </p>
+                    </div>
+                  </li>
+                )
+
+              case 'COMPLETE':
+                return (
+                  <li key={key} className="relative pl-9 py-3">
+                    <span className="absolute left-0 top-4 w-[23px] grid place-items-center">
+                      <span className="w-2.5 h-2.5 rounded-full bg-good ring-4 ring-plane" />
+                    </span>
+                    <ResultPanel result={message} />
+                  </li>
+                )
+
+              default:
+                return null
             }
+          })}
+        </ol>
 
-            case 'SOURCE_FOUND':
-              // Rendered in the Source Library panel, not the stream.
-              return null
-
-            case 'AWAITING_INPUT':
-              // The live prompt is rendered below, pinned to the bottom.
-              return (
-                <div
-                  key={key}
-                  className="border-l-2 border-purple-500/60 pl-4 py-2 bg-purple-500/5 rounded-r-lg"
-                >
-                  <div className="text-[11px] uppercase tracking-widest text-purple-400 font-semibold">
-                    Decision gate
-                  </div>
-                  <div className="text-sm text-zinc-200 mt-0.5">{message.question}</div>
-                </div>
-              )
-
-            case 'ERROR':
-              return (
-                <div
-                  key={key}
-                  className="flex gap-3 p-3 bg-red-500/10 border border-red-500/30 rounded-lg"
-                >
-                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-red-400" />
-                  <div className="min-w-0">
-                    <p className="text-sm text-red-200 break-words">{message.message}</p>
-                    <p className="text-[11px] text-red-400/60 mt-0.5">
-                      {message.recoverable ? 'Recoverable' : 'Mission stopped'} ·{' '}
-                      {formatTime(message.timestamp)}
-                    </p>
-                  </div>
-                </div>
-              )
-
-            case 'COMPLETE':
-              return <ResultPanel key={key} result={message} />
-
-            default:
-              return null
-          }
-        })}
-
-        <div ref={endRef} />
-      </div>
-
-      {awaitingInput && (
-        <div className="border-t border-purple-500/40 bg-purple-500/10 px-6 py-4">
-          <p className="text-[11px] uppercase tracking-widest text-purple-300 font-semibold mb-2">
-            The agent needs your decision
-          </p>
-          <p className="text-sm text-zinc-100 mb-4">{awaitingInput.question}</p>
-          <div className="flex flex-wrap gap-3">
-            {awaitingInput.options.map((option) => (
-              <button
-                key={option}
-                onClick={() => onSendChoice(option)}
-                className="flex-1 min-w-[200px] px-4 py-3 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded-lg transition-colors"
-              >
-                {option}
-              </button>
-            ))}
+        {awaitingInput && (
+          <div className="mt-4">
+            <DecisionGate gate={awaitingInput} onChoose={onSendChoice} />
           </div>
-        </div>
-      )}
-    </section>
+        )}
+
+        <div ref={endRef} className="h-2" />
+      </div>
+    </div>
   )
 }

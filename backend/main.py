@@ -209,9 +209,12 @@ async def root():
 
 @app.get("/health")
 async def health():
+    # Probe live rather than reporting a cached flag — this is also what lets a
+    # recovered Redis be picked up without restarting the backend.
+    redis_ok = await redis_service.ping()
     return {
         "status": "ok",
-        "redis": "degraded" if redis_service.is_degraded() else "ok",
+        "redis": "ok" if redis_ok else "degraded",
         "missing_keys": [k for k in REQUIRED_KEYS if not os.getenv(k)],
     }
 

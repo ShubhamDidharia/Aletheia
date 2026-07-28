@@ -135,6 +135,8 @@ export interface UseWebSocketReturn {
   sources: Source[]
   status: 'connecting' | 'connected' | 'disconnected'
   phase: MissionPhase
+  /** The pipeline stage from the latest STATUS_UPDATE, e.g. "researching". */
+  activePhase: string | null
   awaitingInput: AwaitingInputMessage | null
   result: CompleteMessage | null
   error: string | null
@@ -158,6 +160,7 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
   const [awaitingInput, setAwaitingInput] = useState<AwaitingInputMessage | null>(null)
   const [result, setResult] = useState<CompleteMessage | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [activePhase, setActivePhase] = useState<string | null>(null)
 
   const ws = useRef<WebSocket | null>(null)
   const attempts = useRef(0)
@@ -187,7 +190,9 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
         break
       case 'COMPLETE':
         setResult(message)
-        if (message.data?.sources) setSources(message.data.sources)
+        // Only adopt the final list when it actually has sources — an empty
+        // array must never wipe evidence the user already watched arrive.
+        if (message.data?.sources?.length) setSources(message.data.sources)
         setAwaitingInput(null)
         setPhase('complete')
         break
@@ -198,8 +203,12 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
           setPhase('error')
         }
         break
-      case 'LOG':
       case 'STATUS_UPDATE':
+        setActivePhase(message.phase)
+        setAwaitingInput(null)
+        setPhase((p) => (p === 'complete' || p === 'error' ? p : 'running'))
+        break
+      case 'LOG':
         // Progress means the agent resumed past its last question.
         setAwaitingInput(null)
         setPhase((p) => (p === 'complete' || p === 'error' ? p : 'running'))
@@ -218,22 +227,35 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
     }
 
     // A reconnect replays the full history, so start from a clean slate to
-    // avoid rendering every event twice.
+    // avoid rendering every event twice. Mission state is reset too — the
+    // replay re-derives it, and without this a new session would inherit the
+    // previous mission's phase and never show the composer again.
     setMessages([])
     setSources([])
     setResult(null)
+    setActivePhase(null)
+    setPhase('idle')
+    setAwaitingInput(null)
 
     try {
       const socket = new WebSocket(wsUrlFor(sessionId))
       ws.current = socket
 
+      // Every handler ignores events from a socket that is no longer current.
+      // Switching sessions closes the old socket, but its onclose fires *after*
+      // the new one has opened — without this guard it would stamp
+      // "disconnected" over a perfectly healthy connection.
+      const isCurrent = () => ws.current === socket
+
       socket.onopen = () => {
+        if (!isCurrent()) return
         setStatus('connected')
         setError(null)
         attempts.current = 0
       }
 
       socket.onmessage = (event) => {
+        if (!isCurrent()) return
         try {
           handleMessage(JSON.parse(event.data) as ServerMessage)
         } catch (err) {
@@ -243,10 +265,11 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
 
       socket.onerror = () => {
         // onclose always follows; reconnect is handled there.
-        setStatus('disconnected')
+        if (isCurrent()) setStatus('disconnected')
       }
 
       socket.onclose = () => {
+        if (!isCurrent()) return
         setStatus('disconnected')
         if (!closedByUs.current) scheduleReconnect()
       }
@@ -298,6 +321,7 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
       setSources([])
       setResult(null)
       setError(null)
+      setActivePhase(null)
       if (send({ type: 'START_MISSION', query })) {
         setPhase('running')
       }
@@ -312,8 +336,11 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
     return () => {
       closedByUs.current = true
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
-      ws.current?.close()
+      const socket = ws.current
+      // Clear the ref first so the closing socket's handlers see themselves as
+      // stale and leave the next session's state alone.
       ws.current = null
+      socket?.close()
     }
   }, [connect])
 
@@ -322,6 +349,7 @@ export function useWebSocket(sessionId: string): UseWebSocketReturn {
     sources,
     status,
     phase,
+    activePhase,
     awaitingInput,
     result,
     error,

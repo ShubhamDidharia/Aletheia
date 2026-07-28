@@ -7,6 +7,7 @@ mission still runs end-to-end (single-worker only) instead of dying silently.
 """
 import os
 import json
+import time
 import asyncio
 import logging
 from collections import defaultdict
@@ -28,6 +29,10 @@ SEARCH_CACHE_TTL = 900
 _redis: Optional[redis.Redis] = None
 _redis_ready: Optional[bool] = None  # None = untested, False = degraded
 _degraded_warned = False
+_retry_at = 0.0
+
+# How long to stay in the in-process fallback before probing Redis again.
+DEGRADED_RETRY_SECONDS = 15.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -59,22 +64,38 @@ _local = _LocalBroker()
 
 
 def _mark_degraded(exc: Exception) -> None:
-    global _redis_ready, _degraded_warned
+    global _redis_ready, _degraded_warned, _retry_at
     _redis_ready = False
+    _retry_at = time.monotonic() + DEGRADED_RETRY_SECONDS
     if not _degraded_warned:
         _degraded_warned = True
         log.warning(
             "Redis unavailable (%s: %s). Falling back to in-process broker. "
             "Missions still run, but state is lost on restart and cannot be "
-            "shared across workers. Set a working REDIS_URL to fix.",
-            type(exc).__name__, exc,
+            "shared across workers. Will retry every %.0fs.",
+            type(exc).__name__, exc, DEGRADED_RETRY_SECONDS,
         )
 
 
+def _mark_healthy() -> None:
+    """Recover from degraded mode as soon as an operation succeeds again."""
+    global _redis_ready, _degraded_warned
+    if _redis_ready is not True:
+        _redis_ready = True
+        _degraded_warned = False
+        log.info("Redis connected.")
+
+
 def get_redis() -> Optional[redis.Redis]:
-    """Return a Redis client, or None if we've already determined it's down."""
+    """
+    Return a Redis client, or None while we're in the degraded window.
+
+    Degraded mode is time-boxed rather than permanent: a Redis that comes back
+    (container restarted, network blip) is picked up on the next probe instead
+    of requiring a backend restart.
+    """
     global _redis
-    if _redis_ready is False:
+    if _redis_ready is False and time.monotonic() < _retry_at:
         return None
     if _redis is None:
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -93,14 +114,12 @@ def get_redis() -> Optional[redis.Redis]:
 
 async def ping() -> bool:
     """Probe Redis once at startup so degraded mode is visible in the logs."""
-    global _redis_ready
     client = get_redis()
     if client is None:
         return False
     try:
         await client.ping()
-        _redis_ready = True
-        log.info("Redis connected.")
+        _mark_healthy()
         return True
     except Exception as e:
         _mark_degraded(e)
@@ -174,6 +193,7 @@ async def publish_event(session_id: str, event: Dict[str, Any]) -> None:
             pipe.expire(log_key, EVENT_LOG_TTL)
             pipe.publish(channel, payload)
             await pipe.execute()
+            _mark_healthy()
             return
         except Exception as e:
             _mark_degraded(e)
@@ -219,6 +239,7 @@ async def subscribe(session_id: str) -> AsyncGenerator[Dict[str, Any], None]:
         try:
             pubsub = client.pubsub()
             await pubsub.subscribe(channel)
+            _mark_healthy()
             async for message in pubsub.listen():
                 if message["type"] == "message":
                     yield json.loads(message["data"])

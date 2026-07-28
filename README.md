@@ -146,6 +146,22 @@ real effect on what it does next:
 | **recency** | ≥2 sources are >3 years old **and** some are current | *Stick to recent* drops them and re-syncs the library |
 | **conflict** | Gemini finds two sources that factually contradict each other | *Tie-breaker* appends a new search task and runs it |
 
+### The interface
+
+One workspace at `/dashboard` (`/` redirects to it). Three panels at ≥1280px,
+collapsing to drawers below:
+
+- **Missions** — history for this browser, with live status per mission.
+- **Thought stream** — the agent's actions on a vertical rail, with a phase
+  stepper (Plan → Research → Analyse → Audit → Present) driven by the same
+  `STATUS_UPDATE` phases the graph emits.
+- **Evidence** — every source, with favicon, publication year and a filter.
+
+When the agent hits an ambiguity junction the stream is replaced by a decision
+card that states the question in plain language, explains why it's being asked,
+and takes keyboard focus. Status colour is never the only signal — every state
+ships with an icon and a label.
+
 ### Message protocol
 
 `STATUS_UPDATE`, `LOG`, `SOURCE_FOUND`, `SOURCES_SYNC`, `AWAITING_INPUT`,

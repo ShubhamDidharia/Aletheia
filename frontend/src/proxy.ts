@@ -2,6 +2,8 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 const PROTECTED_PREFIXES = ['/dashboard']
+/** Exact paths that also need auth ('/' would match everything as a prefix). */
+const PROTECTED_EXACT = ['/']
 
 /**
  * Refreshes the Supabase auth cookie on every request and redirects
@@ -37,16 +39,19 @@ export async function proxy(request: NextRequest) {
   } = await supabase.auth.getUser()
 
   const { pathname } = request.nextUrl
-  const isProtected = PROTECTED_PREFIXES.some((p) => pathname.startsWith(p))
+  const isProtected =
+    PROTECTED_EXACT.includes(pathname) || PROTECTED_PREFIXES.some((p) => pathname.startsWith(p))
 
+  // No "redirectTo" round-trip: Next normalises proxy redirects to a bare
+  // path and drops the query string, and both protected routes land on
+  // /dashboard anyway. Sending a param that gets stripped would just be
+  // decoration.
   if (!user && isProtected) {
-    const loginUrl = new URL('/login', request.url)
-    loginUrl.searchParams.set('redirectTo', pathname + request.nextUrl.search)
-    return NextResponse.redirect(loginUrl)
+    return NextResponse.redirect(new URL('/login', request.url))
   }
 
   if (user && pathname === '/login') {
-    return NextResponse.redirect(new URL('/', request.url))
+    return NextResponse.redirect(new URL('/dashboard', request.url))
   }
 
   return response

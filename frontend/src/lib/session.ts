@@ -20,7 +20,11 @@ function newId(): string {
  *
  * Returns null until mounted, so the server and first client render agree.
  */
-export function useSession(): { sessionId: string | null; resetSession: () => void } {
+export function useSession(): {
+  sessionId: string | null
+  resetSession: () => string
+  selectSession: (id: string) => void
+} {
   const [sessionId, setSessionId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -36,7 +40,14 @@ export function useSession(): { sessionId: string | null; resetSession: () => vo
     const id = newId()
     sessionStorage.setItem(STORAGE_KEY, id)
     setSessionId(id)
+    return id
   }, [])
 
-  return { sessionId, resetSession }
+  /** Re-open a past mission: same id re-attaches to its checkpoint and replay. */
+  const selectSession = useCallback((id: string) => {
+    sessionStorage.setItem(STORAGE_KEY, id)
+    setSessionId(id)
+  }, [])
+
+  return { sessionId, resetSession, selectSession }
 }

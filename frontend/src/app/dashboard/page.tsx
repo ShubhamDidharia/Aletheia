@@ -1,171 +1,223 @@
 'use client'
 
-import { Suspense, useEffect, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
-import { Zap, Shield, RotateCcw, AlertTriangle } from 'lucide-react'
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Menu, Library, AlertTriangle, Square } from 'lucide-react'
 
 import { useWebSocket } from '@/lib/websocket'
 import { useSession } from '@/lib/session'
+import { useMissions, type MissionRecord } from '@/lib/missions'
+import { createClient } from '@/lib/supabase/client'
 import { WorkflowGraph } from '@/components/WorkflowGraph'
 import { SourceLibrary } from '@/components/SourceLibrary'
+import { MissionSidebar } from '@/components/MissionSidebar'
+import { Composer } from '@/components/Composer'
+import { PhaseStepper, type PhaseKey } from '@/components/PhaseStepper'
 
-const STATUS_STYLES = {
-  connecting: { dot: 'bg-amber-500', label: 'Connecting' },
-  connected: { dot: 'bg-emerald-500', label: 'Connected' },
-  disconnected: { dot: 'bg-red-500', label: 'Disconnected' },
-} as const
-
-// useSearchParams needs a Suspense boundary or Next fails the prerender.
 export default function DashboardPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="h-screen flex items-center justify-center bg-zinc-950 text-zinc-500">
-          Loading...
-        </div>
-      }
-    >
+    <Suspense fallback={<Splash />}>
       <Dashboard />
     </Suspense>
   )
 }
 
+function Splash() {
+  return (
+    <div className="h-dvh grid place-items-center bg-plane text-ink-3 text-sm">Loading…</div>
+  )
+}
+
+const CONNECTION = {
+  connecting: { dot: 'bg-warning', label: 'Connecting' },
+  connected: { dot: 'bg-good', label: 'Live' },
+  disconnected: { dot: 'bg-critical', label: 'Offline' },
+} as const
+
 function Dashboard() {
-  const { sessionId, resetSession } = useSession()
+  const router = useRouter()
   const searchParams = useSearchParams()
-  const [query, setQuery] = useState('')
-  const [autoStarted, setAutoStarted] = useState(false)
+  const { sessionId, resetSession, selectSession } = useSession()
+  const { missions, startMission, updateMission, removeMission } = useMissions()
+
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [evidenceOpen, setEvidenceOpen] = useState(false)
+  const [activeQuery, setActiveQuery] = useState('')
+  const autoStarted = useRef(false)
 
   const {
-    messages,
-    sources,
-    status,
-    phase,
-    awaitingInput,
-    error,
-    sendChoice,
-    sendStartMission,
+    messages, sources, status, phase, activePhase, awaitingInput, error, sendChoice, sendStartMission,
   } = useWebSocket(sessionId ?? '')
 
-  // Prefill from the home page search box.
-  useEffect(() => {
-    const initial = searchParams.get('q')
-    if (initial) setQuery(initial)
-  }, [searchParams])
+  const launch = useCallback(
+    (query: string) => {
+      if (!sessionId) return
+      setActiveQuery(query)
+      startMission(sessionId, query)
+      sendStartMission(query)
+      setSidebarOpen(false)
+    },
+    [sessionId, startMission, sendStartMission]
+  )
 
-  // Launch it once the socket is live.
+  // Deep link: /dashboard?q=... starts the mission once the socket is live.
   useEffect(() => {
     const initial = searchParams.get('q')
-    if (initial && !autoStarted && status === 'connected' && phase === 'idle') {
-      setAutoStarted(true)
-      sendStartMission(initial)
+    if (initial && !autoStarted.current && status === 'connected' && phase === 'idle') {
+      autoStarted.current = true
+      launch(initial)
+      router.replace('/dashboard')
     }
-  }, [searchParams, autoStarted, status, phase, sendStartMission])
+  }, [searchParams, status, phase, launch, router])
 
-  if (!sessionId) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-zinc-950 text-zinc-500">
-        Loading session...
-      </div>
-    )
-  }
+  // Keep the sidebar entry in step with what the agent is doing.
+  useEffect(() => {
+    if (!sessionId || phase === 'idle') return
+    updateMission(sessionId, {
+      status:
+        phase === 'complete' ? 'complete'
+        : phase === 'error' ? 'error'
+        : phase === 'awaiting_input' ? 'awaiting_input'
+        : 'running',
+      sourceCount: sources.length,
+    })
+  }, [sessionId, phase, sources.length, updateMission])
 
-  const busy = phase === 'running'
-  const canStart = status === 'connected' && query.trim().length > 0 && !busy && !awaitingInput
+  // Restore the title when re-opening a past mission from the sidebar.
+  useEffect(() => {
+    const known = missions.find((m) => m.sessionId === sessionId)
+    if (known && !activeQuery) setActiveQuery(known.query)
+  }, [missions, sessionId, activeQuery])
 
-  const start = () => {
-    if (canStart) sendStartMission(query)
-  }
+  if (!sessionId) return <Splash />
 
-  const startNewMission = () => {
+  const newMission = () => {
     resetSession()
-    setAutoStarted(true)
-    setQuery('')
+    setActiveQuery('')
+    autoStarted.current = true
+    setSidebarOpen(false)
   }
+
+  const openMission = (mission: MissionRecord) => {
+    selectSession(mission.sessionId)
+    setActiveQuery(mission.query)
+    autoStarted.current = true
+    setSidebarOpen(false)
+  }
+
+  const signOut = async () => {
+    await createClient().auth.signOut()
+    router.push('/login')
+  }
+
+  const idle = phase === 'idle' && messages.length === 0
+  const connection = CONNECTION[status]
 
   return (
-    <div className="flex h-screen overflow-hidden bg-zinc-950 text-zinc-100">
-      {/* ── Left: mission control ────────────────────────────────────────── */}
-      <aside className="w-72 shrink-0 border-r border-zinc-800 flex flex-col p-5">
-        <div className="flex items-center gap-2 mb-6">
-          <Shield className="w-5 h-5 text-blue-500" />
-          <div>
-            <h1 className="text-lg font-bold leading-tight">Aletheia</h1>
-            <p className="text-[11px] text-zinc-500">Strategic Intelligence Agent</p>
+    <div className="h-dvh flex overflow-hidden bg-plane text-ink">
+      <MissionSidebar
+        missions={missions}
+        activeSessionId={sessionId}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        onNewMission={newMission}
+        onSelect={openMission}
+        onDelete={removeMission}
+        onSignOut={signOut}
+      />
+
+      <main className="flex-1 flex flex-col min-w-0">
+        <header className="h-14 shrink-0 px-3 sm:px-4 flex items-center gap-3 border-b border-hairline bg-plane/90 backdrop-blur">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open missions"
+            className="p-2 -ml-1 rounded-lg text-ink-3 hover:text-ink hover:bg-raised lg:hidden"
+          >
+            <Menu className="w-4 h-4" />
+          </button>
+
+          <div className="min-w-0 flex-1">
+            {activeQuery ? (
+              <p className="text-sm text-ink truncate" title={activeQuery}>
+                {activeQuery}
+              </p>
+            ) : (
+              <p className="text-sm text-ink-3">New mission</p>
+            )}
           </div>
-        </div>
 
-        <div className="mb-5 p-3 bg-zinc-900 rounded-lg border border-zinc-800">
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${STATUS_STYLES[status].dot}`} />
-            <span className="text-sm text-zinc-300">{STATUS_STYLES[status].label}</span>
+          {!idle && (
+            <div className="hidden md:block">
+              <PhaseStepper currentPhase={activePhase as PhaseKey | null} missionPhase={phase} />
+            </div>
+          )}
+
+          <div
+            className="flex items-center gap-1.5 shrink-0"
+            title={`Backend ${connection.label.toLowerCase()}`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${connection.dot}`} />
+            <span className="text-[11px] text-ink-3 hidden sm:inline">{connection.label}</span>
           </div>
-          <p className="text-[11px] text-zinc-600 mt-1.5 font-mono truncate">
-            {sessionId.slice(0, 18)}
-          </p>
-        </div>
 
-        <label className="text-[11px] uppercase tracking-wider text-zinc-500 mb-2">
-          Research goal
-        </label>
-        <textarea
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          disabled={busy || !!awaitingInput}
-          rows={4}
-          placeholder="Compare Tesla vs BYD's 2026 solid-state battery roadmaps"
-          className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:border-blue-500/60 disabled:opacity-50 disabled:cursor-not-allowed"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) start()
-          }}
-        />
+          <button
+            onClick={() => setEvidenceOpen(true)}
+            aria-label="Open evidence panel"
+            className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-ink-3 hover:text-ink hover:bg-raised xl:hidden"
+          >
+            <Library className="w-4 h-4" />
+            {sources.length > 0 && (
+              <span className="text-[11px] tabular-nums">{sources.length}</span>
+            )}
+          </button>
+        </header>
 
-        <button
-          onClick={start}
-          disabled={!canStart}
-          className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-600 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
-        >
-          <Zap className="w-4 h-4" />
-          {busy ? 'Researching...' : 'Start Research'}
-        </button>
-
-        <button
-          onClick={startNewMission}
-          className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 rounded-lg transition-colors"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          New mission
-        </button>
-
-        {error && (
-          <div className="mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex gap-2">
-            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-            <p className="text-[11px] text-red-200 leading-relaxed break-words">{error}</p>
+        {!idle && (
+          <div className="md:hidden px-4 py-2 border-b border-hairline overflow-x-auto scroll-slim">
+            <PhaseStepper currentPhase={activePhase as PhaseKey | null} missionPhase={phase} />
           </div>
         )}
 
-        <div className="mt-auto pt-6 border-t border-zinc-800 grid grid-cols-2 gap-3">
-          <div>
-            <p className="text-[11px] text-zinc-500">Events</p>
-            <p className="text-xl font-bold text-blue-400">{messages.length}</p>
+        {error && (
+          <div
+            role="alert"
+            className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-critical/30 bg-critical/10 px-3 py-2"
+          >
+            <AlertTriangle className="w-4 h-4 text-critical shrink-0 mt-0.5" />
+            <p className="text-xs text-ink leading-relaxed flex-1 break-words">{error}</p>
           </div>
-          <div>
-            <p className="text-[11px] text-zinc-500">Sources</p>
-            <p className="text-xl font-bold text-amber-400">{sources.length}</p>
-          </div>
-        </div>
-      </aside>
+        )}
 
-      {/* ── Center: live thought stream + decision gates ──────────────────── */}
-      <WorkflowGraph
-        messages={messages}
-        phase={phase}
-        awaitingInput={awaitingInput}
-        onSendChoice={sendChoice}
+        {idle ? (
+          <Composer disabled={status !== 'connected'} onStart={launch} />
+        ) : (
+          <>
+            <WorkflowGraph
+              messages={messages}
+              phase={phase}
+              awaitingInput={awaitingInput}
+              onSendChoice={sendChoice}
+            />
+            <footer className="shrink-0 border-t border-hairline px-4 py-2.5 flex items-center gap-4 text-[11px] text-ink-3">
+              <span className="tabular-nums">{messages.length} events</span>
+              <span className="tabular-nums">{sources.length} sources</span>
+              <button
+                onClick={newMission}
+                className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md hover:bg-raised hover:text-ink transition-colors"
+              >
+                <Square className="w-3 h-3" />
+                Start a new mission
+              </button>
+            </footer>
+          </>
+        )}
+      </main>
+
+      <SourceLibrary
+        sources={sources}
+        open={evidenceOpen}
+        onClose={() => setEvidenceOpen(false)}
       />
-
-      {/* ── Right: evidence gathered ─────────────────────────────────────── */}
-      <SourceLibrary sources={sources} />
     </div>
   )
 }

@@ -21,5 +21,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  return NextResponse.redirect(new URL('/', request.url))
+  // Only ever follow a same-site relative path — never an absolute URL from
+  // the query string, which would be an open redirect.
+  const next = searchParams.get('next') ?? '/dashboard'
+  const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard'
+
+  return NextResponse.redirect(new URL(safeNext, request.url))
 }
