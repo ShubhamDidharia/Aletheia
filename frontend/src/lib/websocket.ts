@@ -60,10 +60,50 @@ export interface Decision {
   label: string
 }
 
+/** A finding whose citation the Auditor matched against a real gathered source. */
+export interface VerifiedClaim {
+  text: string
+  source_url: string
+  source_title: string
+  snippet: string
+}
+
+export interface TableData {
+  headers: string[]
+  rows: string[][]
+}
+
+export interface SWOTData {
+  strengths: string[]
+  weaknesses: string[]
+  opportunities: string[]
+  threats: string[]
+}
+
+export interface ChartPoint {
+  label: string
+  value: number
+}
+
+export interface ChartData {
+  title: string
+  x_label: string
+  y_label: string
+  points: ChartPoint[]
+}
+
+/** What the Visualizer decided the answer should look like. */
+export type UIType = 'table' | 'swot' | 'chart' | 'report'
+
 export interface CompleteMessage {
   type: 'COMPLETE'
-  ui: string
+  ui: UIType
   data: {
+    table?: TableData
+    swot?: SWOTData
+    chart?: ChartData
+    claims?: VerifiedClaim[]
+    dropped_claims?: number
     sources?: Source[]
     tasks?: string[]
     decisions?: Decision[]

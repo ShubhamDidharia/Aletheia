@@ -4,7 +4,8 @@ An agent that *investigates* rather than summarises. Give it a research goal; it
 breaks the goal into search tasks, gathers and validates sources, pauses to ask
 you about genuine ambiguities, and streams every step to the UI in real time.
 
-Implemented through **Commit 6 (Human-in-the-loop)** of the build plan.
+Implemented through **Commit 7 (Auditor + Visualizer + structured output)** of
+the build plan.
 
 ---
 
@@ -73,8 +74,16 @@ arrives). Uses a stub graph, so it costs no Gemini or Tavily quota:
 cd backend && python test_race.py
 ```
 
-> **Gemini free tier is ~20 requests/day per model.** A mission costs 2 calls
-> (planner + conflict analyst), or 3 if you narrow the scope. If you see
+Auditor citation enforcement and Visualizer payload validation, with the LLM
+stubbed — also free:
+
+```bash
+cd backend && python test_commit7.py
+```
+
+> **Gemini free tier is ~20 requests/day per model.** As of Commit 7 a mission
+> costs **4 calls** — planner, conflict analyst, auditor, visualizer (5 if you
+> narrow the scope) — so roughly 5 missions/day. If you see
 > `Gemini quota exhausted`, wait for the midnight-Pacific reset or enable
 > billing on the Google Cloud project.
 
@@ -96,7 +105,29 @@ Next.js ──WebSocket──> FastAPI ──> LangGraph ──> Gemini (plan / 
 | `research_node` | Runs **exactly one** sub-task, validates results with Pydantic, streams `SOURCE_FOUND` |
 | `analyze_node` | Detects stale sources and asks Gemini for genuine contradictions |
 | `gate_node` | Handles **one** ambiguity gate: `interrupt()`, then applies the decision |
-| `finalize_node` | Emits `COMPLETE` |
+| `audit_node` | **Node 3** — extracts findings and deletes any claim whose citation doesn't resolve |
+| `visualize_node` | **Node 4** — picks table / SWOT / chart / report and fills the matching schema |
+| `finalize_node` | Emits `COMPLETE` with `ui` and `data` |
+
+### Auditor and Visualizer (Commit 7)
+
+The **Auditor** asks Gemini to extract factual claims, each tagged with the URL
+it came from — then verifies every citation **in code** against the URLs the
+Researcher actually gathered. A claim citing a URL that was never fetched is
+deleted. The model is not trusted to police itself, which is what makes this a
+hallucination check rather than a second opinion from the same model. URL
+matching normalises scheme, `www.`, trailing slash, case and fragment, so
+cosmetic rewrites don't cause false deletions.
+
+The **Visualizer** picks the output shape in a single call (one call rather than
+choose-then-generate, to keep request count down). The result is then validated
+in code: a `table` with ragged rows is padded or truncated to the header width,
+and a `table` with no payload, an empty `swot`, or a `chart` with fewer than two
+points is downgraded to `report` rather than shipped to the UI as a broken
+component.
+
+Both fail open — if Gemini is unavailable the mission still completes with its
+sources, as a plain report.
 
 **Why gates are their own node.** LangGraph re-executes a node from the top when
 it resumes from `interrupt()`. An interrupt inside the research loop re-runs
@@ -132,8 +163,11 @@ across the reload.
 
 ---
 
-## Not yet built (commits 7–10)
+## Not yet built (commits 8–10)
 
-Auditor and Visualizer agents, `ResponseDispatcher` with DataTable/SWOT/chart
-rendering, Playwright scraper, Supabase persistence of missions and reports,
-pgvector embeddings, mission history sidebar, deployment config.
+`ResponseDispatcher` proper — a sortable/filterable Shadcn DataTable, a
+four-quadrant SWOT grid, Recharts charts, and per-cell audit-trail tooltips.
+(`ResultPanel.tsx` renders Commit 7's output plainly in the meantime.) Also:
+Playwright scraper, contradiction badges in the output table, Supabase
+persistence of missions and reports, pgvector embeddings, mission history
+sidebar, deployment config.

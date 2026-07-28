@@ -17,6 +17,7 @@ import type {
   AwaitingInputMessage,
   MissionPhase,
 } from '@/lib/websocket'
+import { ResultPanel } from '@/components/ResultPanel'
 
 interface WorkflowGraphProps {
   messages: ServerMessage[]
@@ -148,49 +149,7 @@ export function WorkflowGraph({
               )
 
             case 'COMPLETE':
-              return (
-                <div
-                  key={key}
-                  className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-lg"
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <Check className="w-4 h-4 text-emerald-400" />
-                    <p className="text-sm font-semibold text-emerald-300">Research complete</p>
-                  </div>
-                  <p className="text-sm text-emerald-100/80">{message.narrative}</p>
-
-                  {!!message.data?.tasks?.length && (
-                    <div className="mt-3">
-                      <p className="text-[11px] uppercase tracking-wider text-emerald-400/70 mb-1">
-                        Search tasks executed
-                      </p>
-                      <ol className="list-decimal list-inside space-y-0.5">
-                        {message.data.tasks.map((task, i) => (
-                          <li key={i} className="text-xs text-zinc-300 break-words">
-                            {task}
-                          </li>
-                        ))}
-                      </ol>
-                    </div>
-                  )}
-
-                  {!!message.data?.decisions?.length && (
-                    <div className="mt-3">
-                      <p className="text-[11px] uppercase tracking-wider text-emerald-400/70 mb-1">
-                        Your decisions
-                      </p>
-                      <ul className="space-y-0.5">
-                        {message.data.decisions.map((decision, i) => (
-                          <li key={i} className="text-xs text-zinc-300">
-                            <span className="text-zinc-500">{decision.gate_id}:</span>{' '}
-                            {decision.label}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )
+              return <ResultPanel key={key} result={message} />
 
             default:
               return null

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -52,3 +52,72 @@ class ConflictReport(BaseModel):
     topic: str = Field(default="", description="What the sources disagree about.")
     claim_a: str = Field(default="")
     claim_b: str = Field(default="")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Auditor (Node 3)
+# ──────────────────────────────────────────────────────────────────────────────
+class Claim(BaseModel):
+    """A single factual finding, tied to the source it came from."""
+    text: str = Field(min_length=1)
+    source_url: str = Field(
+        description="The exact URL of the source this claim came from. "
+                    "Must be copied verbatim from the supplied source list."
+    )
+
+
+class AuditReport(BaseModel):
+    claims: List[Claim] = Field(default_factory=list)
+
+
+class VerifiedClaim(BaseModel):
+    """A claim whose citation was matched against the gathered sources in code."""
+    text: str
+    source_url: str
+    source_title: str
+    snippet: str
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Visualizer (Node 4) — the Generative UI payloads
+# ──────────────────────────────────────────────────────────────────────────────
+UIType = Literal["table", "swot", "chart", "report"]
+
+
+class TableData(BaseModel):
+    headers: List[str] = Field(default_factory=list)
+    rows: List[List[str]] = Field(default_factory=list)
+
+
+class SWOTData(BaseModel):
+    strengths: List[str] = Field(default_factory=list)
+    weaknesses: List[str] = Field(default_factory=list)
+    opportunities: List[str] = Field(default_factory=list)
+    threats: List[str] = Field(default_factory=list)
+
+
+class ChartPoint(BaseModel):
+    label: str
+    value: float
+
+
+class ChartData(BaseModel):
+    title: str = ""
+    x_label: str = ""
+    y_label: str = ""
+    points: List[ChartPoint] = Field(default_factory=list)
+
+
+class VisualizerOutput(BaseModel):
+    """
+    One LLM call picks the output shape and fills in the matching payload.
+
+    A single call (rather than one to choose plus one to generate) keeps the
+    Gemini request count down; the graph validates that the payload actually
+    matches the chosen `ui` and downgrades to "report" if it doesn't.
+    """
+    ui: UIType
+    narrative: str = Field(default="", description="A short written analysis, 2-4 sentences.")
+    table: Optional[TableData] = None
+    swot: Optional[SWOTData] = None
+    chart: Optional[ChartData] = None

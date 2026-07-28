@@ -135,18 +135,27 @@ async def _finalize(session_id: str, final_state: dict, query: str) -> None:
         for s in final_state.get("sources", [])
     ]
     decisions = final_state.get("decisions", [])
+    claims = final_state.get("claims", [])
+    ui = final_state.get("ui", "report")
 
-    narrative = (
-        f"Researched “{query}” across {len(final_state.get('completed_steps', []))} "
-        f"search tasks and gathered {len(sources)} verified sources."
-    )
+    # The Visualizer writes the analysis; fall back to a factual summary if it
+    # was unavailable, so COMPLETE is never empty.
+    narrative = (final_state.get("narrative") or "").strip()
+    if not narrative:
+        narrative = (
+            f"Researched “{query}” across {len(final_state.get('completed_steps', []))} "
+            f"search tasks and gathered {len(sources)} verified sources."
+        )
     if decisions:
         narrative += " Your decisions: " + "; ".join(d["label"] for d in decisions) + "."
 
     await redis_service.publish_event(session_id, {
         "type": "COMPLETE",
-        "ui": "table",
+        "ui": ui,
         "data": {
+            ui: final_state.get("ui_data", {}),
+            "claims": claims,
+            "dropped_claims": final_state.get("dropped_claims", 0),
             "sources": sources,
             "tasks": final_state.get("completed_steps", []),
             "decisions": decisions,
@@ -154,7 +163,8 @@ async def _finalize(session_id: str, final_state: dict, query: str) -> None:
         "narrative": narrative,
     })
     await redis_service.delete_checkpoint(session_id)
-    log.info("[DONE] %s | %d sources", session_id, len(sources))
+    log.info("[DONE] %s | ui=%s | %d claims | %d sources",
+             session_id, ui, len(claims), len(sources))
 
 
 async def _drive(session_id: str, coro, query: str) -> None:

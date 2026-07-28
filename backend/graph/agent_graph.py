@@ -16,10 +16,13 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
 
-from schemas.responses import SearchResult, is_stale_year
+from schemas.responses import SearchResult, VerifiedClaim, is_stale_year
 from agents.planner import plan
 from agents.researcher import research
 from agents.analyst import detect_conflict
+from agents.auditor import audit
+from agents.visualizer import visualize
+from services.llm import LLMError
 from services.redis_service import save_checkpoint, publish_event
 
 log = logging.getLogger("aletheia.graph")
@@ -41,6 +44,11 @@ class GraphState(TypedDict, total=False):
     pending_gates: List[Dict[str, Any]]
     decisions: List[Dict[str, str]]
     analysis_rounds: int
+    claims: List[Dict[str, Any]]
+    dropped_claims: int
+    ui: str
+    ui_data: Dict[str, Any]
+    narrative: str
 
 
 async def _checkpoint(state: GraphState) -> None:
@@ -321,6 +329,89 @@ async def _apply_decision(state: GraphState, gate: Dict[str, Any], action: str) 
     return state
 
 
+async def audit_node(state: GraphState) -> GraphState:
+    """Node 3 — extract findings and delete anything without a real citation."""
+    session_id = state["session_id"]
+    sources = state.get("sources", [])
+    query = state.get("original_query", state["query"])
+
+    await publish_event(session_id, {
+        "type": "STATUS_UPDATE",
+        "phase": "auditing",
+        "description": f"Verifying claims against {len(sources)} sources...",
+    })
+
+    try:
+        claims, dropped = await audit(query, sources)
+    except LLMError as e:
+        # A failed audit must not lose the research — ship the sources anyway.
+        await publish_event(session_id, {
+            "type": "LOG",
+            "message": f"Audit skipped: {e}",
+            "icon": "compare",
+        })
+        claims, dropped = [], 0
+
+    if claims or dropped:
+        await publish_event(session_id, {
+            "type": "LOG",
+            "message": (
+                f"Verified {len(claims)} claim(s)"
+                + (f"; deleted {dropped} with no valid citation" if dropped else "")
+            ),
+            "icon": "check",
+        })
+
+    new_state: GraphState = {
+        **state,
+        "claims": [c.model_dump() for c in claims],
+        "dropped_claims": dropped,
+        "status": "audited",
+    }
+    await _checkpoint(new_state)
+    return new_state
+
+
+async def visualize_node(state: GraphState) -> GraphState:
+    """Node 4 — decide whether the answer is a table, SWOT, chart or report."""
+    session_id = state["session_id"]
+    query = state.get("original_query", state["query"])
+    claims = [VerifiedClaim(**c) for c in state.get("claims", [])]
+
+    await publish_event(session_id, {
+        "type": "STATUS_UPDATE",
+        "phase": "synthesizing",
+        "description": "Choosing how to present the findings...",
+    })
+
+    try:
+        ui, data, narrative, problems = await visualize(query, claims)
+    except LLMError as e:
+        await publish_event(session_id, {
+            "type": "LOG",
+            "message": f"Presentation step skipped: {e}",
+            "icon": "compare",
+        })
+        ui, data, narrative, problems = "report", {}, "", []
+
+    await publish_event(session_id, {
+        "type": "LOG",
+        "message": f"Presenting results as a {ui}."
+                   + (f" ({'; '.join(problems)})" if problems else ""),
+        "icon": "check",
+    })
+
+    new_state: GraphState = {
+        **state,
+        "ui": ui,
+        "ui_data": data,
+        "narrative": narrative,
+        "status": "synthesized",
+    }
+    await _checkpoint(new_state)
+    return new_state
+
+
 async def finalize_node(state: GraphState) -> GraphState:
     new_state: GraphState = {**state, "status": "completed"}
     await _checkpoint(new_state)
@@ -343,7 +434,7 @@ def _next_after_work(state: GraphState) -> str:
         return "research_node"
     if state.get("analysis_rounds", 0) < MAX_ANALYSIS_ROUNDS:
         return "analyze_node"
-    return "finalize_node"
+    return "audit_node"
 
 
 def route_entry(state: GraphState) -> str:
@@ -365,7 +456,7 @@ def route_after_research(state: GraphState) -> str:
 
 
 def route_after_analyze(state: GraphState) -> str:
-    return "gate_node" if state.get("pending_gates") else "finalize_node"
+    return "gate_node" if state.get("pending_gates") else "audit_node"
 
 
 def route_after_gate(state: GraphState) -> str:
@@ -382,6 +473,8 @@ workflow.add_node("plan_node", plan_node)
 workflow.add_node("research_node", research_node)
 workflow.add_node("analyze_node", analyze_node)
 workflow.add_node("gate_node", gate_node)
+workflow.add_node("audit_node", audit_node)
+workflow.add_node("visualize_node", visualize_node)
 workflow.add_node("finalize_node", finalize_node)
 
 workflow.set_conditional_entry_point(route_entry, {
@@ -399,15 +492,17 @@ workflow.add_conditional_edges("research_node", route_after_research, {
 })
 workflow.add_conditional_edges("analyze_node", route_after_analyze, {
     "gate_node": "gate_node",
-    "finalize_node": "finalize_node",
+    "audit_node": "audit_node",
 })
 workflow.add_conditional_edges("gate_node", route_after_gate, {
     "gate_node": "gate_node",
     "plan_node": "plan_node",
     "research_node": "research_node",
     "analyze_node": "analyze_node",
-    "finalize_node": "finalize_node",
+    "audit_node": "audit_node",
 })
+workflow.add_edge("audit_node", "visualize_node")
+workflow.add_edge("visualize_node", "finalize_node")
 workflow.add_edge("finalize_node", END)
 
 checkpointer = MemorySaver()
