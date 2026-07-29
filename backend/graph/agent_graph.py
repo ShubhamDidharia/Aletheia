@@ -22,6 +22,8 @@ from agents.researcher import research
 from agents.analyst import detect_conflict
 from agents.auditor import audit
 from agents.visualizer import visualize
+from agents.contradiction import detect_contradictions
+from schemas.responses import Contradiction
 from services.llm import LLMError
 from services.redis_service import save_checkpoint, publish_event
 
@@ -46,6 +48,7 @@ class GraphState(TypedDict, total=False):
     analysis_rounds: int
     claims: List[Dict[str, Any]]
     dropped_claims: int
+    contradictions: List[Dict[str, Any]]
     ui: str
     ui_data: Dict[str, Any]
     narrative: str
@@ -362,10 +365,21 @@ async def audit_node(state: GraphState) -> GraphState:
             "icon": "check",
         })
 
+    # Cross-source contradiction sweep — the Visualizer uses this to flag rows.
+    contradictions = await detect_contradictions(query, sources)
+    for conflict in contradictions:
+        await publish_event(session_id, {
+            "type": "LOG",
+            "message": f"Contradiction on {conflict.topic}: "
+                       f"“{conflict.claim_a}” vs “{conflict.claim_b}”",
+            "icon": "compare",
+        })
+
     new_state: GraphState = {
         **state,
         "claims": [c.model_dump() for c in claims],
         "dropped_claims": dropped,
+        "contradictions": [c.model_dump() for c in contradictions],
         "status": "audited",
     }
     await _checkpoint(new_state)
@@ -384,8 +398,10 @@ async def visualize_node(state: GraphState) -> GraphState:
         "description": "Choosing how to present the findings...",
     })
 
+    contradictions = [Contradiction(**c) for c in state.get("contradictions", [])]
+
     try:
-        ui, data, narrative, problems = await visualize(query, claims)
+        ui, data, narrative, problems = await visualize(query, claims, contradictions)
     except LLMError as e:
         await publish_event(session_id, {
             "type": "LOG",

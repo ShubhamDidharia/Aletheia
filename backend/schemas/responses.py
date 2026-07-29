@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -54,6 +54,20 @@ class ConflictReport(BaseModel):
     claim_b: str = Field(default="")
 
 
+class Contradiction(BaseModel):
+    """One factual disagreement between two gathered sources."""
+    topic: str = Field(min_length=1, description="What they disagree about, a few words.")
+    claim_a: str = Field(min_length=1)
+    source_a: str = Field(description="URL of the source making claim_a.")
+    claim_b: str = Field(min_length=1)
+    source_b: str = Field(description="URL of the source making claim_b.")
+
+
+class ContradictionReport(BaseModel):
+    """Full cross-source contradiction sweep (Commit 9)."""
+    contradictions: List[Contradiction] = Field(default_factory=list)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Auditor (Node 3)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -84,9 +98,35 @@ class VerifiedClaim(BaseModel):
 UIType = Literal["table", "swot", "chart", "report"]
 
 
-class TableData(BaseModel):
+class TableDraft(BaseModel):
+    """
+    The table as the LLM produces it.
+
+    Deliberately excludes the contradiction fields: those are computed in code
+    after the fact, and — more practically — a Dict field compiles to
+    `additionalProperties`, which the Gemini Developer API rejects outright.
+    Anything sent to generate_structured() must stay free of dict-typed fields.
+    """
     headers: List[str] = Field(default_factory=list)
     rows: List[List[str]] = Field(default_factory=list)
+    citations: List[List[str]] = Field(
+        default_factory=list,
+        description="Parallel to rows: the source URL backing each cell, or an "
+                    "empty string. Every entry is verified against the gathered "
+                    "sources in code; unmatched ones are cleared.",
+    )
+
+
+class TableData(TableDraft):
+    """The wire format: the draft plus the flags the backend works out."""
+    flagged_rows: List[int] = Field(
+        default_factory=list,
+        description="Indices of rows whose sources contradict each other.",
+    )
+    flag_reasons: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Row index (as a string) -> why it is flagged.",
+    )
 
 
 class SWOTData(BaseModel):
@@ -118,6 +158,6 @@ class VisualizerOutput(BaseModel):
     """
     ui: UIType
     narrative: str = Field(default="", description="A short written analysis, 2-4 sentences.")
-    table: Optional[TableData] = None
+    table: Optional[TableDraft] = None
     swot: Optional[SWOTData] = None
     chart: Optional[ChartData] = None

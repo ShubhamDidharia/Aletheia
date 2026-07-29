@@ -18,7 +18,7 @@ from graph.agent_graph import (
     get_pending_interrupt,
     has_thread,
 )
-from services import redis_service
+from services import redis_service, supabase_store, playwright_scraper
 from services.llm import LLMError
 from services.tavily import TavilyError
 
@@ -49,6 +49,18 @@ async def lifespan(_: FastAPI):
             "Running in DEGRADED mode without Redis. Missions work, but state "
             "is lost on restart and cannot be shared across workers."
         )
+
+    # Optional capabilities — say plainly whether each is on.
+    if supabase_store.is_enabled():
+        log.info("Supabase: missions will be persisted with embeddings.")
+    else:
+        log.info("Supabase: %s", supabase_store.disabled_reason())
+
+    log.info(
+        "Playwright scraper: %s",
+        "available" if playwright_scraper.is_available()
+        else "not installed — blocked pages will be skipped rather than re-fetched",
+    )
     yield
 
 
@@ -136,7 +148,9 @@ async def _finalize(session_id: str, final_state: dict, query: str) -> None:
     ]
     decisions = final_state.get("decisions", [])
     claims = final_state.get("claims", [])
+    contradictions = final_state.get("contradictions", [])
     ui = final_state.get("ui", "report")
+    ui_data = final_state.get("ui_data", {})
 
     # The Visualizer writes the analysis; fall back to a factual summary if it
     # was unavailable, so COMPLETE is never empty.
@@ -153,9 +167,10 @@ async def _finalize(session_id: str, final_state: dict, query: str) -> None:
         "type": "COMPLETE",
         "ui": ui,
         "data": {
-            ui: final_state.get("ui_data", {}),
+            ui: ui_data,
             "claims": claims,
             "dropped_claims": final_state.get("dropped_claims", 0),
+            "contradictions": contradictions,
             "sources": sources,
             "tasks": final_state.get("completed_steps", []),
             "decisions": decisions,
@@ -163,8 +178,22 @@ async def _finalize(session_id: str, final_state: dict, query: str) -> None:
         "narrative": narrative,
     })
     await redis_service.delete_checkpoint(session_id)
-    log.info("[DONE] %s | ui=%s | %d claims | %d sources",
-             session_id, ui, len(claims), len(sources))
+    log.info("[DONE] %s | ui=%s | %d claims | %d sources | %d contradictions",
+             session_id, ui, len(claims), len(sources), len(contradictions))
+
+    # Long-term memory. Deliberately after the result has been delivered — a
+    # storage failure must not cost the user a mission they already saw finish.
+    await supabase_store.save_mission(
+        session_id=session_id,
+        query=query,
+        user_id=final_state.get("user_id"),
+        sources=sources,
+        claims=claims,
+        ui=ui,
+        ui_data=ui_data,
+        narrative=narrative,
+        contradictions=contradictions,
+    )
 
 
 async def _drive(session_id: str, coro, query: str) -> None:

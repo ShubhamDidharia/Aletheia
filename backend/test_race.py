@@ -63,10 +63,16 @@ async def _fake_has_thread(session_id):
     return session_id in _paused
 
 
+async def _no_persist(**_kwargs) -> None:
+    """This test drives 15 synthetic missions — none belong in real storage."""
+    return None
+
+
 main.run_mission = _fake_run_mission
 main.resume_mission = _fake_resume_mission
 main.get_pending_interrupt = _fake_pending
 main.has_thread = _fake_has_thread
+main.supabase_store.save_mission = _no_persist
 
 
 async def _one_round() -> tuple[bool, list[str]]:

@@ -1,0 +1,41 @@
+# Render blueprint for the Aletheia backend + Redis.
+#   render.com -> New -> Blueprint -> point at this repo.
+# Set the secret env vars (marked sync:false) in the dashboard after the first deploy.
+services:
+  - type: web
+    name: aletheia-api
+    runtime: python
+    plan: starter
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # One worker: LangGraph's MemorySaver holds interrupt state in process, so
+    # a paused mission must come back to the same worker. Scale out only after
+    # moving the checkpointer into Redis.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.0"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false          # e.g. https://aletheia.vercel.app
+      - key: LOG_LEVEL
+        value: INFO
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: aletheia-redis
+          property: connectionString
+
+  - type: redis
+    name: aletheia-redis
+    plan: starter
+    maxmemoryPolicy: noeviction
+    ipAllowList: []          # private network only

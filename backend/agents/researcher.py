@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from schemas.responses import SearchResult
 from services.tavily import search
+from services import playwright_scraper
 from services.redis_service import publish_event
 
 log = logging.getLogger("aletheia.researcher")
@@ -47,6 +48,46 @@ def _extract_year(item: Dict[str, Any]) -> Optional[int]:
     return max(plausible) if plausible else None
 
 
+async def _rescue_thin_results(
+    raw_results: List[Dict[str, Any]],
+    session_id: str,
+) -> List[Dict[str, Any]]:
+    """
+    Re-fetch pages Tavily couldn't read (paywalls, bot-blocking, JS-rendered)
+    with a headless browser, so they aren't discarded for having no content.
+
+    A no-op when Playwright isn't installed.
+    """
+    thin = [r for r in raw_results if playwright_scraper.needs_scraping(r.get("content", ""))]
+    if not thin or not playwright_scraper.is_available():
+        return raw_results
+
+    await publish_event(session_id, {
+        "type": "LOG",
+        "message": f"{len(thin)} source(s) returned no readable text — retrying with a browser.",
+        "icon": "read",
+    })
+
+    rescued = 0
+    for item in thin:
+        url = item.get("url")
+        if not url:
+            continue
+        text = await playwright_scraper.scrape(url)
+        if text:
+            item["content"] = text
+            rescued += 1
+
+    if rescued:
+        await publish_event(session_id, {
+            "type": "LOG",
+            "message": f"Recovered full text from {rescued} of {len(thin)} blocked source(s).",
+            "icon": "check",
+        })
+
+    return raw_results
+
+
 async def research(
     task: str,
     session_id: str,
@@ -68,6 +109,8 @@ async def research(
     })
 
     raw_results = await search(task)
+
+    raw_results = await _rescue_thin_results(raw_results, session_id)
 
     valid_results: List[SearchResult] = []
     dropped = 0

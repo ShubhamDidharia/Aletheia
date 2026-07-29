@@ -4,8 +4,8 @@ An agent that *investigates* rather than summarises. Give it a research goal; it
 breaks the goal into search tasks, gathers and validates sources, pauses to ask
 you about genuine ambiguities, and streams every step to the UI in real time.
 
-Implemented through **Commit 7 (Auditor + Visualizer + structured output)** of
-the build plan.
+All **10 commits** of the build plan are implemented. See
+[DEPLOYMENT.md](DEPLOYMENT.md) to ship it.
 
 ---
 
@@ -81,11 +81,13 @@ stubbed — also free:
 cd backend && python test_commit7.py
 ```
 
-> **Gemini free tier is ~20 requests/day per model.** As of Commit 7 a mission
-> costs **4 calls** — planner, conflict analyst, auditor, visualizer (5 if you
-> narrow the scope) — so roughly 5 missions/day. If you see
-> `Gemini quota exhausted`, wait for the midnight-Pacific reset or enable
-> billing on the Google Cloud project.
+> **Gemini free tier is ~20 requests/day per model.** A full mission now costs
+> **5–6 calls** — planner, conflict analyst, auditor, contradiction sweep,
+> visualizer, plus one embedding if Supabase is configured — so roughly 3
+> missions/day. If you see `Gemini quota exhausted`, wait for the
+> midnight-Pacific reset or enable billing on the Google Cloud project. Every
+> LLM step fails open: a blown quota degrades the output rather than losing the
+> research.
 
 ---
 
@@ -105,9 +107,9 @@ Next.js ──WebSocket──> FastAPI ──> LangGraph ──> Gemini (plan / 
 | `research_node` | Runs **exactly one** sub-task, validates results with Pydantic, streams `SOURCE_FOUND` |
 | `analyze_node` | Detects stale sources and asks Gemini for genuine contradictions |
 | `gate_node` | Handles **one** ambiguity gate: `interrupt()`, then applies the decision |
-| `audit_node` | **Node 3** — extracts findings and deletes any claim whose citation doesn't resolve |
-| `visualize_node` | **Node 4** — picks table / SWOT / chart / report and fills the matching schema |
-| `finalize_node` | Emits `COMPLETE` with `ui` and `data` |
+| `audit_node` | **Node 3** — extracts findings, deletes any claim whose citation doesn't resolve, then sweeps for contradictions |
+| `visualize_node` | **Node 4** — picks table / SWOT / chart / report, fills the matching schema, cites each cell and flags contradicted rows |
+| `finalize_node` | Emits `COMPLETE` with `ui` and `data`, then persists to Supabase |
 
 ### Auditor and Visualizer (Commit 7)
 
@@ -179,11 +181,46 @@ across the reload.
 
 ---
 
-## Not yet built (commits 8–10)
+### Generative UI (Commit 8)
 
-`ResponseDispatcher` proper — a sortable/filterable Shadcn DataTable, a
-four-quadrant SWOT grid, Recharts charts, and per-cell audit-trail tooltips.
-(`ResultPanel.tsx` renders Commit 7's output plainly in the meantime.) Also:
-Playwright scraper, contradiction badges in the output table, Supabase
-persistence of missions and reports, pgvector embeddings, mission history
-sidebar, deployment config.
+`ResponseDispatcher` reads `ui` off the `COMPLETE` event and renders the
+matching component:
+
+- **table** → sortable, filterable `DataTable`. Sorting tracks each row's
+  original index, so citations and contradiction flags stay attached to their
+  own row rather than to a position.
+- **swot** → four-quadrant grid, each quadrant labelled and icon-marked.
+- **chart** → Recharts. Year/quarter/month labels render as a `LineChart`,
+  everything else as a `BarChart`; a table view toggle doubles as the
+  accessibility fallback.
+- **report** → the narrative and its claim list.
+
+**Audit trail.** Cited values are underlined; hover, focus or tap one to see
+the exact source snippet and a link to the page. The citation grid is verified
+against real gathered sources server-side, so a tooltip never claims provenance
+the Auditor didn't establish.
+
+### Contradiction detection & memory (Commit 9)
+
+A cross-source sweep runs after the audit and returns each disagreement with
+both claims and both URLs — verified in code, and a source cannot contradict
+itself. Affected table rows get a warning badge and an explanation.
+
+When Tavily returns a page with no readable text (paywall, bot-blocking,
+JS-rendered), the **Playwright scraper** re-fetches it in a headless browser.
+Optional — without it those sources are simply skipped.
+
+Finished missions, their sources, and the report with a **pgvector embedding**
+are stored in Supabase for later semantic search. Also optional; run
+[`backend/supabase_schema.sql`](backend/supabase_schema.sql) and set
+`SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` to enable it. The startup log says
+plainly which optional features are on.
+
+## Known limits
+
+- **A backend restart loses an in-flight mission.** LangGraph's `MemorySaver`
+  keeps interrupt state in process; page refreshes are covered by Redis replay,
+  process restarts are not. This is also why the deploy pins one worker.
+- **Mission history is per browser** (`localStorage`). Missions are persisted to
+  Supabase, but the sidebar doesn't read them back yet.
+- **Gemini free tier is the binding constraint** — see the note above.

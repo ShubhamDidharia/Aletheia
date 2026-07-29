@@ -1,7 +1,11 @@
 'use client'
 
-import { Check, ExternalLink, ShieldCheck, Trash2, Table2, Grid2x2, BarChart3, FileText } from 'lucide-react'
-import type { CompleteMessage, VerifiedClaim, UIType } from '@/lib/websocket'
+import {
+  Check, ExternalLink, ShieldCheck, Trash2, Table2, Grid2x2, BarChart3, FileText,
+  AlertTriangle,
+} from 'lucide-react'
+import type { CompleteMessage, VerifiedClaim, Contradiction, UIType } from '@/lib/websocket'
+import { ResponseDispatcher } from '@/components/ResponseDispatcher'
 
 const UI_META: Record<UIType, { icon: typeof Table2; label: string }> = {
   table: { icon: Table2, label: 'Comparison table' },
@@ -11,11 +15,9 @@ const UI_META: Record<UIType, { icon: typeof Table2; label: string }> = {
 }
 
 /**
- * Renders the Visualizer's chosen output shape.
- *
- * Commit 8 replaces this with the full ResponseDispatcher — a sortable/
- * filterable Shadcn DataTable, Recharts charts and per-cell audit-trail
- * tooltips. This is the plain version so Commit 7's output is visible.
+ * The frame around a finished mission: headline, narrative, and the
+ * generative-UI payload (delegated to ResponseDispatcher), then the evidence
+ * that backs it — verified claims, contradictions, tasks and decisions.
  */
 export function ResultPanel({ result }: { result: CompleteMessage }) {
   const { ui, data, narrative } = result
@@ -37,9 +39,11 @@ export function ResultPanel({ result }: { result: CompleteMessage }) {
       <div className="p-4 space-y-4">
         {narrative && <p className="text-sm text-ink leading-relaxed">{narrative}</p>}
 
-        {ui === 'table' && data.table && <TableView table={data.table} />}
-        {ui === 'swot' && data.swot && <SwotView swot={data.swot} />}
-        {ui === 'chart' && data.chart && <ChartView chart={data.chart} />}
+        <ResponseDispatcher result={result} />
+
+        {!!data.contradictions?.length && (
+          <ContradictionsView contradictions={data.contradictions} />
+        )}
 
         {claims.length > 0 && <ClaimsView claims={claims} dropped={data.dropped_claims ?? 0} />}
 
@@ -84,112 +88,45 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-function TableView({ table }: { table: NonNullable<CompleteMessage['data']['table']> }) {
+/** Commit 9: disagreements found across sources, both sides shown and linked. */
+function ContradictionsView({ contradictions }: { contradictions: Contradiction[] }) {
   return (
-    <div className="overflow-x-auto scroll-slim rounded-lg border border-hairline">
-      <table className="w-full text-xs border-collapse">
-        <thead>
-          <tr className="bg-white/[0.04]">
-            {table.headers.map((header, i) => (
-              <th
-                key={i}
-                scope="col"
-                className="text-left font-semibold text-ink px-3 py-2 whitespace-nowrap border-b border-hairline"
-              >
-                {header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {table.rows.map((row, r) => (
-            <tr key={r} className="border-b border-hairline/60 last:border-0">
-              {row.map((cell, c) =>
-                c === 0 ? (
-                  <th key={c} scope="row" className="text-left px-3 py-2 align-top font-medium text-ink-2">
-                    {cell}
-                  </th>
-                ) : (
-                  <td key={c} className="px-3 py-2 align-top text-ink-2">
-                    {cell}
-                  </td>
-                )
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
+    <div className="rounded-lg border border-warning/30 bg-warning/[0.06] p-3">
+      <p className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-warning mb-2">
+        <AlertTriangle className="w-3.5 h-3.5" />
+        {contradictions.length} contradiction{contradictions.length === 1 ? '' : 's'} found
+      </p>
 
-const SWOT_QUADRANTS = [
-  { key: 'strengths', label: 'Strengths', ring: 'border-good/30', ink: 'text-good' },
-  { key: 'weaknesses', label: 'Weaknesses', ring: 'border-critical/30', ink: 'text-critical' },
-  { key: 'opportunities', label: 'Opportunities', ring: 'border-brand/30', ink: 'text-brand' },
-  { key: 'threats', label: 'Threats', ring: 'border-warning/30', ink: 'text-warning' },
-] as const
-
-function SwotView({ swot }: { swot: NonNullable<CompleteMessage['data']['swot']> }) {
-  return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {SWOT_QUADRANTS.map(({ key, label, ring, ink }) => (
-        <div key={key} className={`rounded-lg border ${ring} bg-white/[0.02] p-3`}>
-          <p className={`text-[10px] uppercase tracking-wider font-semibold mb-2 ${ink}`}>{label}</p>
-          {swot[key].length === 0 ? (
-            <p className="text-xs text-ink-3">None identified</p>
-          ) : (
-            <ul className="space-y-1.5">
-              {swot[key].map((item, i) => (
-                <li key={i} className="text-xs text-ink-2 leading-relaxed flex gap-1.5">
-                  <span className={`mt-1.5 w-1 h-1 rounded-full shrink-0 ${ink} bg-current`} />
-                  {item}
-                </li>
+      <ul className="space-y-2.5">
+        {contradictions.map((conflict, i) => (
+          <li key={i}>
+            <p className="text-[11px] font-medium text-ink">{conflict.topic}</p>
+            <div className="mt-1 space-y-1">
+              {[
+                { claim: conflict.claim_a, url: conflict.source_a },
+                { claim: conflict.claim_b, url: conflict.source_b },
+              ].map((side, s) => (
+                <p key={s} className="text-[11px] text-ink-2 leading-relaxed flex gap-1.5">
+                  <span className="text-warning shrink-0">{s === 0 ? 'A' : 'B'}</span>
+                  <span>
+                    “{side.claim}”{' '}
+                    <a
+                      href={side.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-brand hover:underline decoration-dotted underline-offset-2"
+                    >
+                      source
+                      <ExternalLink className="inline w-2.5 h-2.5 ml-0.5" />
+                    </a>
+                  </span>
+                </p>
               ))}
-            </ul>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-/**
- * Single-series magnitude: one sequential hue, so no legend is needed — the
- * title names the measure. Values are direct-labelled, bars carry a 4px
- * rounded data-end anchored to the baseline with a 2px gap between them.
- */
-function ChartView({ chart }: { chart: NonNullable<CompleteMessage['data']['chart']> }) {
-  const max = Math.max(...chart.points.map((p) => Math.abs(p.value)), 1)
-
-  return (
-    <figure className="rounded-lg border border-hairline bg-white/[0.02] p-3">
-      {chart.title && (
-        <figcaption className="text-xs font-medium text-ink mb-3">{chart.title}</figcaption>
-      )}
-      <div className="flex flex-col gap-0.5">
-        {chart.points.map((point, i) => (
-          <div key={i} className="group flex items-center gap-2" title={`${point.label}: ${point.value}`}>
-            <span className="w-24 sm:w-28 shrink-0 text-[11px] text-ink-3 truncate text-right">
-              {point.label}
-            </span>
-            <div className="flex-1 h-5 min-w-0">
-              <div
-                className="h-full bg-[--color-brand] transition-[width] group-hover:brightness-110"
-                style={{
-                  width: `${Math.max((Math.abs(point.value) / max) * 100, 1.5)}%`,
-                  borderRadius: '0 4px 4px 0',
-                }}
-              />
             </div>
-            <span className="w-14 shrink-0 text-[11px] text-ink-2 text-right tabular-nums">
-              {point.value}
-            </span>
-          </div>
+          </li>
         ))}
-      </div>
-      {chart.y_label && <p className="text-[10px] text-ink-3 mt-2.5">{chart.y_label}</p>}
-    </figure>
+      </ul>
+    </div>
   )
 }
 

@@ -129,7 +129,7 @@ export function SourceLibrary({ sources, open, onClose }: SourceLibraryProps) {
                 target="_blank"
                 rel="noopener noreferrer"
                 title={source.snippet ?? source.title}
-                className="block p-2.5 rounded-lg border border-hairline bg-raised/50 hover:bg-raised hover:border-brand/25 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                className="source-pop block p-2.5 rounded-lg border border-hairline bg-raised/50 hover:bg-raised hover:border-brand/25 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
               >
                 <div className="flex items-start gap-2.5">
                   {favicon ? (

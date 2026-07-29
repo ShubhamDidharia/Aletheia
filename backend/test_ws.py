@@ -17,6 +17,11 @@ from collections import Counter
 
 import websockets
 
+# Agent output carries curly quotes and em-dashes; the default Windows console
+# codepage (cp1252) raises UnicodeEncodeError on them and kills the client.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 BACKEND = "ws://localhost:8000/ws/research"
 DEFAULT_QUERY = "Compare Tesla and BYD 2026 solid-state battery roadmaps"
 

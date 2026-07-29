@@ -8,3 +8,9 @@ langgraph-checkpoint>=2.0
 google-genai>=1.0
 redis>=5.0
 websockets>=13.0
+
+# Optional. Long-term memory (Commit 9) — no-ops without SUPABASE_* env vars.
+supabase>=2.0
+# Optional. Scraper fallback for pages Tavily can't read. Also needs a browser:
+#   playwright install chromium
+playwright>=1.40

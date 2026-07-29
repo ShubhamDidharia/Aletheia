@@ -71,6 +71,20 @@ export interface VerifiedClaim {
 export interface TableData {
   headers: string[]
   rows: string[][]
+  /** Parallel to rows: the verified source URL backing each cell, or ''. */
+  citations?: string[][]
+  /** Rows whose sources contradict each other. */
+  flagged_rows?: number[]
+  /** Row index (as a string) -> why it is flagged. */
+  flag_reasons?: Record<string, string>
+}
+
+export interface Contradiction {
+  topic: string
+  claim_a: string
+  source_a: string
+  claim_b: string
+  source_b: string
 }
 
 export interface SWOTData {
@@ -104,6 +118,7 @@ export interface CompleteMessage {
     chart?: ChartData
     claims?: VerifiedClaim[]
     dropped_claims?: number
+    contradictions?: Contradiction[]
     sources?: Source[]
     tasks?: string[]
     decisions?: Decision[]
