@@ -34,6 +34,23 @@ the sharp edges are.
 20. [Testing](#20-testing)
 21. [Quick reference](#21-quick-reference)
 
+### Diagrams
+
+| # | Diagram | Shows | In |
+|---|---|---|---|
+| 1 | Deployment topology | processes, trust zones, every network hop | [§2](#2-system-topology) |
+| 2 | Mission lifecycle | the full request/response sequence, OAuth to `COMPLETE` | [§5.1](#51-sequence) |
+| 3 | Decision-gate race | the buggy vs fixed interleaving, side by side | [§6.3](#63-_drive--the-mission-driver) |
+| 4 | The agent graph | all 7 nodes, 6 routing functions, every edge predicate | [§7.2](#72-the-graph) |
+| 5 | Interrupt re-execution | `gate_node` running twice, and why that is safe | [§7.4](#74--the-central-architectural-insight) |
+| 6 | Failure survival | what lives through disconnect, refresh, Redis loss, restart | [§7.6](#76-checkpointing--two-independent-mechanisms) |
+| 7 | Gate decision effects | each choice → state mutation → routing target | [§8](#8-human-in-the-loop-the-ambiguity-junctions) |
+| 8 | Type pipeline | every shape a fact passes through; trusted vs verified | [§11](#11-contracts--schemas-and-the-wire-protocol) |
+| 9 | Redis degraded mode | the healthy/degraded/probing state machine | [§12.1](#121-redis--servicesredis_servicepy) |
+| 10 | Database schema | tables, keys, upsert targets, the pgvector column | [§13](#13-persistence-and-the-data-model) |
+| 11 | Socket lifecycle | connect, reconnect backoff, exhaustion | [§14.2](#142-the-websocket-hook) |
+| 12 | Mission phase | how the UI derives state purely from the event stream | [§14.2](#142-the-websocket-hook) |
+
 ---
 
 ## 1. What Aletheia is
@@ -113,6 +130,55 @@ The same pattern recurs at every level:
                                                        Playwright (optional,
                                                        rescues unreadable pages)
 ```
+
+### Deployment topology and trust zones
+
+```mermaid
+flowchart LR
+    subgraph client["Untrusted — the user's browser"]
+        UI["Next.js client bundle<br/>React 19 · Recharts"]
+        SS["sessionStorage<br/>session id"]
+        LS["localStorage<br/>mission history, 25 max"]
+    end
+
+    subgraph vercel["Vercel"]
+        EDGE["proxy.ts at the edge<br/>auth gate, runs before render"]
+        RSC["Server components<br/>+ /auth/callback handler"]
+    end
+
+    subgraph render["Render — private network"]
+        API["FastAPI · uvicorn<br/>--workers 1<br/>ConnectionManager + running missions"]
+        REDIS[("Redis<br/>private network only<br/>noeviction")]
+    end
+
+    subgraph managed["Managed"]
+        SB[("Supabase<br/>Auth · Postgres · pgvector")]
+    end
+
+    subgraph ext["Third-party"]
+        GEM["Gemini 2.5 Flash"]
+        TAV["Tavily search"]
+        WEB["Target websites"]
+    end
+
+    UI -- "HTTPS page loads" --> EDGE
+    EDGE --> RSC
+    UI -- "WSS — ALL mission traffic" --> API
+    UI -- "HTTPS OAuth" --> SB
+    EDGE -- "validate cookie: getUser" --> SB
+    API -- "pub/sub · keys · cache" --> REDIS
+    API -- "service-role writes, bypasses RLS" --> SB
+    API -- "structured output, 5-6 calls" --> GEM
+    API -- "search, 3-5 calls" --> TAV
+    API -- "headless Chromium rescue" --> WEB
+
+    UI -.- SS
+    UI -.- LS
+```
+
+Note what is **absent**: there is no arrow from the browser to Gemini or Tavily,
+and none between Vercel and Render. No provider key reaches the client, and the
+two server tiers are joined only by the user's browser.
 
 ### Component inventory
 
@@ -611,6 +677,38 @@ would ever re-send the answer. Deregistering first closes the window.
 `test_race.py` is a 15-round regression test for precisely this, replying with
 zero delay every time.
 
+The interleaving, before and after:
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant D as _drive
+    participant H as USER_RESPONSE handler
+    participant R as Redis
+
+    Note over B,R: BEFORE — publish, then deregister
+    D->>R: publish AWAITING_INPUT (several round-trips)
+    R-->>B: AWAITING_INPUT
+    B->>H: USER_RESPONSE — answered instantly
+    H->>H: _is_running? TRUE (bookkeeping still stale)
+    H-->>B: ERROR "already being applied"
+    D->>D: running_missions.pop() — too late
+    Note over D: agent parked forever;<br/>nothing re-sends the answer
+
+    Note over B,R: AFTER — deregister, then publish
+    D->>D: running_missions.pop()
+    D->>R: publish AWAITING_INPUT
+    R-->>B: AWAITING_INPUT
+    B->>H: USER_RESPONSE — answered instantly
+    H->>H: get_pending_interrupt? TRUE (asks the GRAPH)
+    H->>H: _is_running? FALSE
+    H->>D: resume_mission(choice)
+```
+
+The window is real rather than theoretical because publishing costs several
+Redis round-trips, and it widens over a network — which is why this was rare
+locally and common in production.
+
 `_extract_interrupt` reads the `__interrupt__` key that `ainvoke()` adds when a
 node suspends, and tolerates non-dict interrupt values by wrapping them.
 
@@ -729,31 +827,60 @@ Two details worth knowing:
 
 ### 7.2 The graph
 
+Hexagons are the routing functions; every edge is labelled with the predicate
+that selects it.
+
 ```mermaid
 flowchart TD
-    START(["entry (conditional)"]) --> P[plan_node]
-    START --> R[research_node]
-    START --> A[analyze_node]
+    ENTRY(["ainvoke — conditional entry point"]) --> RE{{"route_entry"}}
 
-    P -->|gates queued| G[gate_node]
-    P -->|no gates| R
+    RE -- "task_list empty" --> P
+    RE -- "tasks remain" --> R
+    RE -- "all tasks done" --> A
 
-    R -->|tasks remain| R
-    R -->|all done| A
+    P["plan_node<br/>phase: planning<br/>Gemini → sub-tasks<br/>may queue: scope"] --> RAP{{"route_after_plan"}}
+    RAP -- "pending_gates" --> G
+    RAP -- "else" --> R
 
-    A -->|gates queued| G
-    A -->|no gates| AU[audit_node]
+    R["research_node<br/>phase: researching<br/>ONE sub-task · never interrupts"] --> RAR{{"route_after_research"}}
+    RAR -- "tasks remain" --> R
+    RAR -- "else" --> A
 
-    G -->|more gates| G
-    G -->|task_list cleared| P
-    G -->|tasks remain| R
-    G -->|rounds < 2| A
-    G -->|otherwise| AU
+    A["analyze_node<br/>phase: analyzing<br/>may queue: recency, conflict<br/>analysis_rounds += 1"] --> RAA{{"route_after_analyze"}}
+    RAA -- "pending_gates" --> G
+    RAA -- "else" --> AU
 
-    AU --> V[visualize_node]
-    V --> F[finalize_node]
-    F --> E([END])
+    G["gate_node<br/>interrupt · resolve · apply<br/>NO side effects above interrupt"] --> RAG{{"route_after_gate"}}
+    RAG -- "more gates queued" --> G
+    RAG -- "gates drained" --> NAW{{"_next_after_work"}}
+
+    NAW -- "task_list empty<br/>after 'narrow'" --> P
+    NAW -- "tasks remain<br/>after 'tie_break'" --> R
+    NAW -- "analysis_rounds < 2" --> A
+    NAW -- "else" --> AU
+
+    AU["audit_node<br/>phase: auditing<br/>verify claims + sweep contradictions"] --> V
+    V["visualize_node<br/>phase: synthesizing<br/>pick + validate the payload"] --> F
+    F["finalize_node<br/>status := completed"] --> FIN(["END"])
+
+    style G fill:#9085e9,stroke:#6f63d8,color:#fff
+    style P fill:#1c5cab,stroke:#3987e5,color:#fff
+    style R fill:#1c5cab,stroke:#3987e5,color:#fff
+    style A fill:#1c5cab,stroke:#3987e5,color:#fff
+    style AU fill:#1c5cab,stroke:#3987e5,color:#fff
+    style V fill:#1c5cab,stroke:#3987e5,color:#fff
 ```
+
+Three cycles exist, and each is bounded:
+
+| Cycle | Bounded by |
+|---|---|
+| `research_node` → itself | `task_list` is finite; each pass marks one task complete |
+| `gate_node` → itself | `pending_gates` drains one per pass; each gate id fires once per mission |
+| `gate_node` → `analyze_node` → `gate_node` | `MAX_ANALYSIS_ROUNDS = 2` |
+| `gate_node` → `plan_node` (re-plan) | the `scope` gate is only ever raised once |
+
+`recursion_limit: 50` is the backstop if any of those reasoning steps is wrong.
 
 ### 7.3 Nodes
 
@@ -809,6 +936,46 @@ async def gate_node(state):
 Everything before `interrupt()` is a pure read of state. Everything after runs
 exactly once, on resume.
 
+Drawn out, with the two executions of the same node side by side:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant D as _drive task
+    participant LG as LangGraph
+    participant GN as gate_node
+    participant R as Redis
+    participant B as Browser
+
+    Note over D,GN: PASS 1 — ainvoke(initial_state)
+    D->>LG: ainvoke(state)
+    LG->>GN: execute node
+    GN->>GN: read pending_gates[0] — PURE
+    GN->>LG: interrupt(gate payload)
+    Note right of GN: SUSPENDS.<br/>Nothing below the interrupt<br/>line has executed.
+    LG-->>D: state carrying __interrupt__
+    D->>D: running_missions.pop() FIRST
+    D->>R: publish AWAITING_INPUT
+    R-->>B: AWAITING_INPUT
+
+    B->>D: USER_RESPONSE choice
+
+    Note over D,GN: PASS 2 — ainvoke(Command(resume=choice))
+    D->>LG: ainvoke(Command resume)
+    LG->>GN: RE-EXECUTE FROM THE TOP
+    GN->>GN: read pending_gates[0] — PURE, repeated, free
+    GN->>LG: interrupt(gate payload)
+    LG-->>GN: RETURNS the choice this time
+    GN->>GN: _resolve_action → _apply_decision
+    GN->>R: publish LOG "You chose ..."
+    GN-->>LG: new state, gate dequeued
+```
+
+Steps 3 and 13 are **the same line of code running twice**. That is the entire
+reason `research_node` may not contain an interrupt: were step 3 a Tavily call,
+step 13 would bill it again and re-emit every source event — once per user
+decision.
+
 ### 7.5 Routing
 
 Six pure functions drive the conditional edges:
@@ -852,6 +1019,35 @@ restart loses an in-flight mission, and why the deploy pins a single worker.
 Moving to a Redis-backed LangGraph checkpointer is the fix, and would also make
 workers interchangeable.
 
+```mermaid
+flowchart TB
+    subgraph mem["Process memory — dies with the worker"]
+        MS["MemorySaver<br/>interrupt position + node state"]
+        RM["running missions<br/>asyncio task handles"]
+        CM["ConnectionManager<br/>socket map"]
+    end
+
+    subgraph rds["Redis — outlives the process, TTL 1h"]
+        EV["events:SID<br/>replay log, 500 max"]
+        CP["checkpoint:SID<br/>GraphState snapshot"]
+        CA["cache:tavily:HASH<br/>TTL 15m"]
+    end
+
+    E1(["Client disconnects"]) --> OK1["Task keeps running<br/>events keep accumulating"]
+    E2(["Page refresh"]) --> OK2["Replay log restores the stream<br/>pending question re-asked<br/>FULL RECOVERY"]
+    E3(["Redis unreachable"]) --> OK3["_LocalBroker takes over<br/>retry every 15s<br/>mission still completes"]
+    E4(["Backend restart"]) --> BAD["History replays,<br/>but the graph cannot resume<br/>MISSION LOST"]
+
+    OK2 -.reads.-> EV
+    OK2 -.reads.-> CP
+    BAD -.needs.-> MS
+
+    style BAD fill:#d03b3b,stroke:#a02c2c,color:#fff
+    style OK1 fill:#0ca30c,stroke:#087a08,color:#fff
+    style OK2 fill:#0ca30c,stroke:#087a08,color:#fff
+    style OK3 fill:#fab219,stroke:#c98500,color:#000
+```
+
 ---
 
 ## 8. Human-in-the-loop: the ambiguity junctions
@@ -859,6 +1055,32 @@ workers interchangeable.
 Three gates. Each fires **at most once per mission** (tracked via
 `decisions[].gate_id`), and each choice **materially changes what the agent
 does next** — none of them are cosmetic.
+
+```mermaid
+flowchart LR
+    subgraph sc["scope — raised by plan_node"]
+        SCN["narrow"] --> SCNE["query := query + suggestion<br/>task_list := empty<br/>completed_steps := empty"] --> SCNR(["re-plan"])
+        SCK["keep_broad"] --> SCKE["no state change"] --> SCKR(["research"])
+    end
+
+    subgraph rc["recency — raised by analyze_node"]
+        RCD["discard"] --> RCDE["sources := fresh only<br/>publish SOURCES_SYNC"] --> RCDR(["continue"])
+        RCK["keep"] --> RCKE["no state change"] --> RCKR(["continue"])
+    end
+
+    subgraph cf["conflict — raised by analyze_node"]
+        CFT["tie_break"] --> CFTE["task_list += tie-breaker search"] --> CFTR(["research"])
+        CFF["flag_both"] --> CFFE["no state change"] --> CFFR(["continue"])
+    end
+
+    style SCNE fill:#1c5cab,stroke:#3987e5,color:#fff
+    style RCDE fill:#1c5cab,stroke:#3987e5,color:#fff
+    style CFTE fill:#1c5cab,stroke:#3987e5,color:#fff
+```
+
+The blue boxes are the three choices that change the agent's trajectory. Note
+that *"continue"* means `_next_after_work` re-evaluates from scratch — so a
+`keep` on recency may still land back in `analyze_node` if a round remains.
 
 ### 8.1 `scope`
 
@@ -1227,6 +1449,34 @@ system policing itself.
 
 ## 11. Contracts — schemas and the wire protocol
 
+Every shape a fact passes through, and what enforces each transition:
+
+```mermaid
+flowchart TD
+    T["Tavily JSON<br/>title · url · content · published_date"]
+    T -- "Pydantic validate<br/>malformed dropped" --> SR
+    SR["SearchResult<br/>title · url HttpUrl · snippet<br/>published_year · source_type"]
+    SR -- "model_dump mode=json<br/>msgpack cannot hold models" --> ST
+    ST["GraphState.sources<br/>plain dicts"]
+    ST -- "Gemini + AuditReport schema" --> CL
+    CL["Claim<br/>text · source_url<br/>model-supplied, untrusted"]
+    CL -- "URL must resolve to a fetched source<br/>ELSE DELETED" --> VC
+    VC["VerifiedClaim<br/>text · source_url · source_title · snippet<br/>metadata from the SOURCE record"]
+    VC -- "Gemini + VisualizerOutput schema" --> TD
+    TD["TableDraft<br/>headers · rows · citations<br/>no dict fields — Gemini rejects them"]
+    TD -- "shape repair · citation verify<br/>contradiction flagging" --> TDA
+    TDA["TableData<br/>+ flagged_rows · flag_reasons<br/>backend-computed, never model-supplied"]
+    TDA -- "validate_event" --> WS(["COMPLETE over the WebSocket"])
+
+    style CL fill:#fab219,stroke:#c98500,color:#000
+    style TD fill:#fab219,stroke:#c98500,color:#000
+    style VC fill:#0ca30c,stroke:#087a08,color:#fff
+    style TDA fill:#0ca30c,stroke:#087a08,color:#fff
+```
+
+Amber is model-supplied and untrusted; green is verified in code. Every
+amber-to-green edge is an enforcement point.
+
 ### 11.1 The WebSocket protocol
 
 [`backend/schemas/messages.py`](backend/schemas/messages.py) — mirrored
@@ -1351,6 +1601,33 @@ successful operation and logs "Redis connected." exactly once on recovery;
 `_degraded_warned` ensures the scary warning also prints once, not on every
 event.
 
+```mermaid
+stateDiagram-v2
+    [*] --> Untested
+    Untested --> Healthy: ping succeeds
+    Untested --> Degraded: ping fails
+    Healthy --> Degraded: any operation raises
+    Degraded --> Probing: 15s elapsed
+    Probing --> Healthy: operation succeeds
+    Probing --> Degraded: operation fails again
+    Healthy --> [*]
+
+    note right of Degraded
+        get_redis returns None
+        _LocalBroker serves pub/sub and KV
+        warning logged exactly once
+    end note
+
+    note right of Healthy
+        _mark_healthy resets the warning flag
+        and logs "Redis connected."
+    end note
+```
+
+The `Degraded → Probing` edge is what makes recovery automatic: the failure is a
+15-second window, not a latch, so a Redis that comes back is picked up without a
+deploy.
+
 Connection tuning: `socket_connect_timeout=5`, `socket_timeout=15`,
 `health_check_interval=30`, `retry_on_timeout=True`, and
 `ssl_cert_reqs="none"` for `rediss://` URLs (Upstash-style TLS endpoints).
@@ -1464,6 +1741,39 @@ missions (id text PK = session_id, user_id uuid → auth.users, title, query,
                 UNIQUE (mission_id)               ← the upsert target
 ```
 
+```mermaid
+erDiagram
+    AUTH_USERS ||--o{ MISSIONS : owns
+    MISSIONS  ||--o{ SOURCES  : gathered
+    MISSIONS  ||--|| REPORTS  : produced
+
+    MISSIONS {
+        text id PK "the WebSocket session id"
+        uuid user_id FK "always NULL today - see issue 2"
+        text title
+        text query
+        text status "CHECK idle running awaiting_input complete error"
+        timestamptz created_at
+    }
+    SOURCES {
+        bigserial id PK
+        text mission_id FK "cascade delete"
+        text url "UNIQUE with mission_id - upsert target"
+        text title
+        text snippet
+        text source_type
+        int published_year
+    }
+    REPORTS {
+        bigserial id PK
+        text mission_id FK "UNIQUE - upsert target"
+        text output_type "CHECK table swot chart report"
+        text content "the narrative"
+        jsonb structured_data "ui payload claims contradictions"
+        vector embedding "768 dims - HNSW cosine index"
+    }
+```
+
 ### Why HNSW and not ivfflat
 
 Quoted from the schema, because it is a real trap:
@@ -1572,6 +1882,51 @@ attempts, then a terminal "Reload the page to retry."
 
 That "only if non-empty" guard matters: an empty `sources` array in a
 `COMPLETE` event must never wipe evidence the user already watched arrive.
+
+**Socket lifecycle**, which is independent of mission state:
+
+```mermaid
+stateDiagram-v2
+    [*] --> connecting
+    connecting --> connected: onopen
+    connecting --> disconnected: onerror or onclose
+    connected --> disconnected: onclose
+    disconnected --> connecting: scheduleReconnect
+    disconnected --> [*]: 8 attempts exhausted
+
+    note right of disconnected
+        backoff = 2^n seconds, capped at 15
+        every handler checks isCurrent first,
+        so a dying socket cannot overwrite
+        the next session's status
+    end note
+```
+
+**Mission phase**, derived purely from the event stream:
+
+```mermaid
+stateDiagram-v2
+    [*] --> idle
+    idle --> running: sendStartMission
+    running --> awaiting_input: AWAITING_INPUT
+    awaiting_input --> running: sendChoice, LOG or STATUS_UPDATE
+    running --> complete: COMPLETE
+    running --> error: ERROR with recoverable false
+    awaiting_input --> error: ERROR with recoverable false
+    complete --> idle: connect resets on reconnect
+    error --> idle: connect resets on reconnect
+
+    note right of idle
+        connect() resets to idle deliberately:
+        the replay re-derives every transition,
+        and without the reset a new session
+        inherits the old mission's phase
+    end note
+```
+
+A `LOG` or `STATUS_UPDATE` arriving while paused moves the phase back to
+`running` — progress is proof the agent resumed past its question, so the
+decision card is dismissed without waiting for a dedicated event.
 
 `sendChoice` optimistically clears the gate and sets `running` so the UI
 responds instantly rather than waiting for the round-trip.

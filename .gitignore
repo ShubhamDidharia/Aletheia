@@ -36,3 +36,6 @@ pip-delete-this-directory.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# Personal notes — local only, never published
+INTERVIEW_PREP.md
